@@ -27,9 +27,16 @@ import {
   Award,
   Sliders,
   ChevronRight,
-  Volume2
+  Volume2,
+  LogOut,
+  Menu
 } from 'lucide-react';
 import { supabase } from '../lib/supabaseClient';
+import ResumeAnalysis from './features/ResumeAnalysis';
+import SkillAssessments from './features/SkillAssessments';
+import CareerRecommendations from './features/CareerRecommendations';
+import MultilingualSupport, { SUPPORTED_LANGUAGES, TELEPROMPTER_SCRIPTS, saveVideoLanguageToDb } from './features/MultilingualSupport';
+import Toast from './features/Toast';
 
 export default function CandidateWorkspace({ 
   activeTab, 
@@ -38,18 +45,182 @@ export default function CandidateWorkspace({
   jobs, 
   onUpdateProfile, 
   onApplyJob,
+  onAddJobs,
   onSendChatMessage,
   interviews = [],
-  onScheduleInterview
+  onScheduleInterview,
+  onLogout
 }) {
-  const [profileName, setProfileName] = useState(activeCandidate.name);
-  const [profileTitle, setProfileTitle] = useState(activeCandidate.title);
-  const [profileLocation, setProfileLocation] = useState(activeCandidate.location);
-  const [profileBio, setProfileBio] = useState(activeCandidate.bio);
-  const [profileSkills, setProfileSkills] = useState(activeCandidate.skills);
+  const [profileName, setProfileName] = useState(activeCandidate?.name || '');
+  const [profileTitle, setProfileTitle] = useState(activeCandidate?.title || '');
+  const [profileLocation, setProfileLocation] = useState(activeCandidate?.location || '');
+  const [profileBio, setProfileBio] = useState(activeCandidate?.bio || '');
+  const [profileSkills, setProfileSkills] = useState(activeCandidate?.skills || []);
   const [newSkill, setNewSkill] = useState('');
-  const [profileExperience, setProfileExperience] = useState(activeCandidate.experience || '');
-  const [profileEducation, setProfileEducation] = useState(activeCandidate.education || '');
+  const [profileExperience, setProfileExperience] = useState(activeCandidate?.experience || '');
+  const [profileEducation, setProfileEducation] = useState(activeCandidate?.education || '');
+
+  // Real Supabase States
+  const [currentUser, setCurrentUser] = useState(null);
+  const [profileLinkedin, setProfileLinkedin] = useState('');
+  const [profileGithub, setProfileGithub] = useState('');
+  const [profileVideoUrl, setProfileVideoUrl] = useState('');
+  const [profilePdfUrl, setProfilePdfUrl] = useState('');
+  const [applications, setApplications] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [cloudinaryUrl, setCloudinaryUrl] = useState('');
+  const [toast, setToast] = useState(null);
+  
+  // Mobile responsive sidebar toggle state
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // Gemini AI Job Generation States
+  const [searchDomain, setSearchDomain] = useState('');
+  const [isGeneratingJobs, setIsGeneratingJobs] = useState(false);
+
+  // Multilingual Support States
+  const [videoLanguage, setVideoLanguage] = useState(activeCandidate?.videoLanguage || 'English');
+
+  const handleVideoLanguageChange = (selectedLang) => {
+    setVideoLanguage(selectedLang);
+    const customScript = TELEPROMPTER_SCRIPTS[selectedLang];
+    if (customScript) {
+      setTeleprompterText(customScript);
+    }
+    // Sync with parent state & database
+    onUpdateProfile({ videoLanguage: selectedLang });
+    if (currentUser?.id) {
+      saveVideoLanguageToDb(currentUser.id, selectedLang);
+    }
+  };
+
+  // Helper for displaying notifications
+  const showToast = (message, type = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => {
+      setToast(null);
+    }, 4000);
+  };
+
+
+
+
+
+  // Mount Loader for real Supabase data
+  useEffect(() => {
+    // ── DEMO MODE: skip Supabase, instantly populate Sarah Jenkins' rich profile ──
+    if (activeCandidate?.id === 'cand-1' || activeCandidate?.isDemo) {
+      setProfileName('Sarah Jenkins');
+      setProfileTitle('Full Stack Engineer');
+      setProfileLocation('New York, NY');
+      setProfileBio('Passionate full-stack developer with 5+ years of experience building scalable web solutions. Focused on pixel-perfect implementations, WebRTC audio/video streaming tools, and high-performance React application patterns. I love crafting smooth, production-grade UI components that delight users.');
+      setProfileSkills(['React', 'JavaScript', 'TypeScript', 'Node.js', 'Tailwind CSS', 'SQL', 'WebRTC', 'Next.js']);
+      setProfileExperience('5 years at top product companies including Razorpay, Freshworks, and early-stage startups.');
+      setProfileEducation('B.Tech Computer Science, IIT Delhi (2019)');
+      setProfileLinkedin('https://linkedin.com/in/sarahjenkins');
+      setProfileGithub('https://github.com/sarahjenkins-dev');
+      setProfileVideoUrl('https://assets.mixkit.co/videos/preview/mixkit-woman-working-on-a-laptop-in-a-bright-office-42280-large.mp4');
+      setRecordedVideo('https://assets.mixkit.co/videos/preview/mixkit-woman-working-on-a-laptop-in-a-bright-office-42280-large.mp4');
+      setPdfFile('sarah_jenkins_resume.pdf');
+      setKycVerified(true);
+      setVideoLanguage('English');
+      setApplications([
+        { id: 'app-demo-1', job_id: 'job-1', status: 'Shortlisted', ai_match_score: 94, job: { title: 'Senior Frontend Engineer (React & WebRTC)', company: 'VividAI Systems', location: 'Remote (US/Canada)', salary: '$130k-$160k' } },
+        { id: 'app-demo-2', job_id: 'job-3', status: 'Screened', ai_match_score: 82, job: { title: 'Generative AI & LLM Engineer', company: 'NeuralNext', location: 'Seattle, WA', salary: '$160k-$210k' } },
+        { id: 'app-demo-3', job_id: 'job-4', status: 'Interview Scheduled', ai_match_score: 78, job: { title: 'Cloud DevOps Architect', company: 'CloudScale Corp', location: 'Remote (Global)', salary: '$140k-$180k' } }
+      ]);
+      setLoading(false);
+      showToast('⚡ Welcome back, Sarah Jenkins! Portfolio loaded.', 'info');
+      return;
+    }
+
+    // Safety timeout: if loading takes longer than 2.0 seconds, force disable the loader
+    const safetyTimeout = setTimeout(() => {
+      setLoading(false);
+    }, 2000);
+
+    const loadData = async () => {
+      if (!supabase) {
+        setLoading(false);
+        return;
+      }
+      try {
+        setLoading(true);
+        // 1. Get current authenticated user
+        const { data: { user }, error: authError } = await supabase.auth.getUser();
+        if (authError || !user) {
+          console.error("Auth error:", authError);
+          setLoading(false);
+          return;
+        }
+        setCurrentUser(user);
+
+        // 2. Fetch User Details from users table
+        const { data: dbUser } = await supabase
+          .from('users')
+          .select('name, email')
+          .eq('id', user.id)
+          .single();
+
+        if (dbUser) {
+          setProfileName(dbUser.name || '');
+        }
+
+        // 3. Fetch Candidate Profile from candidate_profiles table
+        const { data: dbProfile } = await supabase
+          .from('candidate_profiles')
+          .select('*')
+          .eq('user_id', user.id)
+          .maybeSingle();
+
+        if (dbProfile) {
+          setProfileTitle(dbProfile.title || 'Software Engineer Portfolio');
+          setProfileLocation(dbProfile.location || 'Remote');
+          setProfileBio(dbProfile.bio || 'Welcome to your portfolio! Update your details, skills, and record a video resume to stand out.');
+          setProfileSkills(dbProfile.skills || ['React', 'JavaScript', 'HTML5', 'CSS3']);
+          setProfileExperience(dbProfile.experience || '');
+          setProfileEducation(dbProfile.education || '');
+          setProfileLinkedin(dbProfile.linkedin || '');
+          setProfileGithub(dbProfile.github || '');
+          setProfileVideoUrl(dbProfile.video_url || '');
+          setProfilePdfUrl(dbProfile.pdf_url || '');
+          setRecordedVideo(dbProfile.video_url || '');
+          setPdfFile(dbProfile.pdf_resume_name || '');
+          setKycVerified(dbProfile.kyc_status === 'Verified');
+          setVideoLanguage(dbProfile.video_language || 'English');
+        }
+
+        // 4. Fetch Applications joined with Jobs safely in memory
+        const { data: dbApps } = await supabase
+          .from('applications')
+          .select('*')
+          .eq('candidate_id', user.id);
+
+        if (dbApps && dbApps.length > 0) {
+          const { data: dbJobs } = await supabase.from('jobs').select('*');
+          const mergedApps = dbApps.map(app => ({
+            ...app,
+            job: dbJobs ? dbJobs.find(j => j.id === app.job_id) : null
+          }));
+          setApplications(mergedApps);
+        }
+      } catch (err) {
+        console.error("Error loading candidate workspace data:", err);
+      } finally {
+        setLoading(false);
+        clearTimeout(safetyTimeout);
+      }
+    };
+
+    loadData().then(() => {
+      showToast(`⚡ Welcome back, ${activeCandidate?.name || 'Sarah Jenkins'}! Portfolio loaded.`, 'info');
+    });
+
+    return () => {
+      clearTimeout(safetyTimeout);
+    };
+  }, []);
+
 
   // Recruiter Message & Scheduling States
   const [chatInput, setChatInput] = useState('');
@@ -407,16 +578,16 @@ Do NOT wrap the response in markdown blocks like \`\`\`json or add extra text. R
 
   const handleConfirmBooking = async (e) => {
     e.preventDefault();
-    if (!selectedDate || !selectedTime) return;
+    if (!selectedDate || !selectedTime || !currentUser) return;
 
     setIsBooking(true);
     
-    const targetJob = jobs.find(j => j.id === activeCandidate.appliedJobs[0]) || jobs[0];
+    const targetJob = jobs.find(j => j.id === activeCandidate?.appliedJobs?.[0]) || jobs[0];
     
     const newInterview = {
       id: `int-${Date.now()}`,
-      candidateId: activeCandidate.id,
-      candidateName: activeCandidate.name,
+      candidateId: currentUser.id,
+      candidateName: profileName,
       role: targetJob ? targetJob.title : 'Software Engineer',
       date: selectedDate,
       time: selectedTime,
@@ -430,30 +601,31 @@ Do NOT wrap the response in markdown blocks like \`\`\`json or add extra text. R
       }
       
       if (onSendChatMessage) {
-        await onSendChatMessage(activeCandidate.id, `Booked Interview Slot! I will join the HireVid Virtual Room on ${selectedDate} at ${selectedTime}.`, 'candidate');
+        await onSendChatMessage(currentUser.id, `Booked Interview Slot! I will join the HireVid Virtual Room on ${selectedDate} at ${selectedTime}.`, 'candidate');
       }
 
       setIsBooking(false);
+      showToast('Interview successfully scheduled!', 'success');
     }, 1000);
   };
 
   // Recording variables
   const [isRecording, setIsRecording] = useState(false);
-  const [recordedVideo, setRecordedVideo] = useState(activeCandidate.videoResumeUrl);
+  const [recordedVideo, setRecordedVideo] = useState(activeCandidate?.videoResumeUrl || '');
   const [recordingSeconds, setRecordingSeconds] = useState(0);
 
   const [teleprompterText, setTeleprompterText] = useState(
-    "Hi, I'm " + activeCandidate.name + ", and I'm a passionate " + activeCandidate.title + ". In my 5 years in engineering, I have focused heavily on crafting beautiful, interactive applications with React, Node.js, and high-quality utility systems like Tailwind. I love solving complex frontend layouts and designing modular APIs..."
+    "Hi, I'm " + (activeCandidate?.name || '') + ", and I'm a passionate " + (activeCandidate?.title || '') + ". In my 5 years in engineering, I have focused heavily on crafting beautiful, interactive applications with React, Node.js, and high-quality utility systems like Tailwind. I love solving complex frontend layouts and designing modular APIs..."
   );
 
   // KYC variables
   const [kycProgress, setKycProgress] = useState(0);
   const [isKycScanning, setIsKycScanning] = useState(false);
-  const [kycVerified, setKycVerified] = useState(activeCandidate.kycStatus === 'Verified');
+  const [kycVerified, setKycVerified] = useState(activeCandidate?.kycStatus === 'Verified');
 
   // Parser variables
   const [isParsing, setIsParsing] = useState(false);
-  const [pdfFile, setPdfFile] = useState(activeCandidate.pdfResumeName || '');
+  const [pdfFile, setPdfFile] = useState(activeCandidate?.pdfResumeName || '');
   const [uploadErrorMsg, setUploadErrorMsg] = useState('');
   const [videoUploadErrorMsg, setVideoUploadErrorMsg] = useState('');
 
@@ -470,16 +642,19 @@ Do NOT wrap the response in markdown blocks like \`\`\`json or add extra text. R
 
   // Sync profile details when activeCandidate shifts
   useEffect(() => {
-    setProfileName(activeCandidate.name);
-    setProfileTitle(activeCandidate.title);
-    setProfileLocation(activeCandidate.location);
-    setProfileBio(activeCandidate.bio);
-    setProfileSkills(activeCandidate.skills);
-    setRecordedVideo(activeCandidate.videoResumeUrl);
-    setPdfFile(activeCandidate.pdfResumeName || '');
-    setKycVerified(activeCandidate.kycStatus === 'Verified');
-    setProfileExperience(activeCandidate.experience || '');
-    setProfileEducation(activeCandidate.education || '');
+    if (activeCandidate) {
+      setProfileName(activeCandidate.name || '');
+      setProfileTitle(activeCandidate.title || 'Software Engineer Portfolio');
+      setProfileLocation(activeCandidate.location || 'Remote');
+      setProfileBio(activeCandidate.bio || 'Welcome to your portfolio! Update your details, skills, and record a video resume to stand out.');
+      setProfileSkills(activeCandidate.skills || ['React', 'JavaScript', 'HTML5', 'CSS3']);
+      setRecordedVideo(activeCandidate.videoResumeUrl || '');
+      setPdfFile(activeCandidate.pdfResumeName || '');
+      setKycVerified(activeCandidate.kycStatus === 'Verified');
+      setProfileExperience(activeCandidate.experience || '');
+      setProfileEducation(activeCandidate.education || '');
+      setVideoLanguage(activeCandidate.videoLanguage || 'English');
+    }
   }, [activeCandidate]);
 
   // Manage camera streams reactively based on active tab
@@ -630,7 +805,7 @@ Do NOT wrap the response in markdown blocks like \`\`\`json or add extra text. R
 
             if (supabase) {
               try {
-                const fileName = `${activeCandidate.id}_${Date.now()}.webm`;
+                const fileName = `${activeCandidate?.id || 'candidate'}_${Date.now()}.webm`;
                 const { error: uploadError } = await supabase.storage
                   .from('videos')
                   .upload(fileName, blob, { contentType: 'video/webm' });
@@ -707,7 +882,7 @@ Do NOT wrap the response in markdown blocks like \`\`\`json or add extra text. R
     if (supabase) {
       try {
         const fileExt = file.name.split('.').pop();
-        const fileName = `${activeCandidate.id}_${Date.now()}.${fileExt}`;
+        const fileName = `${currentUser?.id || activeCandidate?.id || 'candidate'}_${Date.now()}.${fileExt}`;
         const filePath = `${fileName}`;
 
         const { error: uploadError } = await supabase.storage
@@ -722,6 +897,18 @@ Do NOT wrap the response in markdown blocks like \`\`\`json or add extra text. R
           console.error("Supabase drop resume upload failed, falling back to mock document sync:", uploadError);
           setUploadErrorMsg(`Supabase Storage PDF Upload Failed: ${uploadError.message}. Please ensure a 'resumes' storage bucket is created in your Supabase dashboard and is set to PUBLIC with SELECT & INSERT policies allowed for all users.`);
           const mockUrl = "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf";
+          
+          if (currentUser) {
+            await supabase.from('candidate_profiles').upsert({
+              user_id: currentUser.id,
+              pdf_url: mockUrl,
+              pdf_resume_name: name,
+              skills: uniqueSkills
+            });
+            setProfilePdfUrl(mockUrl);
+            setPdfFile(name);
+          }
+
           onUpdateProfile({
             pdfResumeName: name,
             pdfResumeUrl: mockUrl,
@@ -731,6 +918,18 @@ Do NOT wrap the response in markdown blocks like \`\`\`json or add extra text. R
           const { data: { publicUrl } } = supabase.storage
             .from('resumes')
             .getPublicUrl(filePath);
+
+          if (currentUser) {
+            await supabase.from('candidate_profiles').upsert({
+              user_id: currentUser.id,
+              pdf_url: publicUrl,
+              pdf_resume_name: name,
+              skills: uniqueSkills
+            });
+            setProfilePdfUrl(publicUrl);
+            setPdfFile(name);
+            showToast('Resume uploaded and parsed successfully!', 'success');
+          }
 
           onUpdateProfile({
             pdfResumeName: name,
@@ -745,6 +944,18 @@ Do NOT wrap the response in markdown blocks like \`\`\`json or add extra text. R
         const parsedSkills = ['TypeScript', 'Next.js', 'Tailwind CSS', 'Docker', 'GraphQL'];
         const uniqueSkills = [...new Set([...profileSkills, ...parsedSkills])];
         setProfileSkills(uniqueSkills);
+        
+        if (currentUser) {
+          await supabase.from('candidate_profiles').upsert({
+            user_id: currentUser.id,
+            pdf_url: mockUrl,
+            pdf_resume_name: name,
+            skills: uniqueSkills
+          });
+          setProfilePdfUrl(mockUrl);
+          setPdfFile(name);
+        }
+
         onUpdateProfile({
           pdfResumeName: name,
           pdfResumeUrl: mockUrl,
@@ -780,7 +991,7 @@ Do NOT wrap the response in markdown blocks like \`\`\`json or add extra text. R
     if (supabase) {
       try {
         const fileExt = file.name.split('.').pop();
-        const fileName = `${activeCandidate.id}_${Date.now()}.${fileExt}`;
+        const fileName = `${currentUser?.id || activeCandidate?.id || 'candidate'}_${Date.now()}.${fileExt}`;
         const filePath = `${fileName}`;
 
         const { error: uploadError } = await supabase.storage
@@ -795,6 +1006,18 @@ Do NOT wrap the response in markdown blocks like \`\`\`json or add extra text. R
           console.error("Supabase resume upload failed, falling back to mock document sync:", uploadError);
           setUploadErrorMsg(`Supabase Storage PDF Upload Failed: ${uploadError.message}. Please ensure a 'resumes' storage bucket is created in your Supabase dashboard and is set to PUBLIC with SELECT & INSERT policies allowed for all users.`);
           const mockUrl = "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf";
+          
+          if (currentUser) {
+            await supabase.from('candidate_profiles').upsert({
+              user_id: currentUser.id,
+              pdf_url: mockUrl,
+              pdf_resume_name: name,
+              skills: uniqueSkills
+            });
+            setProfilePdfUrl(mockUrl);
+            setPdfFile(name);
+          }
+
           onUpdateProfile({
             pdfResumeName: name,
             pdfResumeUrl: mockUrl,
@@ -804,6 +1027,18 @@ Do NOT wrap the response in markdown blocks like \`\`\`json or add extra text. R
           const { data: { publicUrl } } = supabase.storage
             .from('resumes')
             .getPublicUrl(filePath);
+
+          if (currentUser) {
+            await supabase.from('candidate_profiles').upsert({
+              user_id: currentUser.id,
+              pdf_url: publicUrl,
+              pdf_resume_name: name,
+              skills: uniqueSkills
+            });
+            setProfilePdfUrl(publicUrl);
+            setPdfFile(name);
+            showToast('Resume uploaded and parsed successfully!', 'success');
+          }
 
           onUpdateProfile({
             pdfResumeName: name,
@@ -818,6 +1053,18 @@ Do NOT wrap the response in markdown blocks like \`\`\`json or add extra text. R
         const parsedSkills = ['TypeScript', 'Next.js', 'GraphQL', 'Tailwind CSS'];
         const uniqueSkills = [...new Set([...profileSkills, ...parsedSkills])];
         setProfileSkills(uniqueSkills);
+        
+        if (currentUser) {
+          await supabase.from('candidate_profiles').upsert({
+            user_id: currentUser.id,
+            pdf_url: mockUrl,
+            pdf_resume_name: name,
+            skills: uniqueSkills
+          });
+          setProfilePdfUrl(mockUrl);
+          setPdfFile(name);
+        }
+
         onUpdateProfile({
           pdfResumeName: name,
           pdfResumeUrl: mockUrl,
@@ -842,31 +1089,342 @@ Do NOT wrap the response in markdown blocks like \`\`\`json or add extra text. R
   };
 
   // Skill Editor Handlers
-  const handleAddSkill = () => {
+  const handleAddSkill = async () => {
     if (newSkill.trim() && !profileSkills.includes(newSkill.trim())) {
       const updated = [...profileSkills, newSkill.trim()];
       setProfileSkills(updated);
-      onUpdateProfile({ skills: updated });
       setNewSkill('');
+
+      if (currentUser && supabase) {
+        try {
+          await supabase.from('candidate_profiles').upsert({
+            user_id: currentUser.id,
+            skills: updated
+          });
+        } catch (err) {
+          console.error("Failed to sync new skill to database:", err);
+        }
+      }
+
+      onUpdateProfile({ skills: updated });
     }
   };
 
-  const handleRemoveSkill = (skillToRemove) => {
+  const handleRemoveSkill = async (skillToRemove) => {
     const updated = profileSkills.filter(s => s !== skillToRemove);
     setProfileSkills(updated);
+
+    if (currentUser && supabase) {
+      try {
+        await supabase.from('candidate_profiles').upsert({
+          user_id: currentUser.id,
+          skills: updated
+        });
+      } catch (err) {
+        console.error("Failed to remove skill from database:", err);
+      }
+    }
+
     onUpdateProfile({ skills: updated });
   };
 
-  const handleSaveInfo = (e) => {
+  const handleSaveInfo = async (e) => {
     e.preventDefault();
-    onUpdateProfile({
-      name: profileName,
-      title: profileTitle,
-      location: profileLocation,
-      bio: profileBio,
-      experience: profileExperience,
-      education: profileEducation
-    });
+    if (!currentUser || !supabase) {
+      // Mock flow
+      onUpdateProfile({
+        name: profileName,
+        title: profileTitle,
+        location: profileLocation,
+        bio: profileBio,
+        experience: profileExperience,
+        education: profileEducation
+      });
+      return;
+    }
+
+    try {
+      if (profileName.trim()) {
+        await supabase.from('users').update({ name: profileName.trim() }).eq('id', currentUser.id);
+      }
+
+      const { error } = await supabase.from('candidate_profiles').upsert({
+        user_id: currentUser.id,
+        title: profileTitle,
+        location: profileLocation,
+        bio: profileBio,
+        skills: profileSkills,
+        experience: profileExperience,
+        education: profileEducation,
+        linkedin: profileLinkedin,
+        github: profileGithub
+      });
+
+      if (error) throw error;
+      
+      showToast('Profile portfolio saved successfully!', 'success');
+      
+      if (onUpdateProfile) {
+        onUpdateProfile({
+          name: profileName,
+          title: profileTitle,
+          location: profileLocation,
+          bio: profileBio,
+          experience: profileExperience,
+          education: profileEducation,
+          skills: profileSkills,
+          linkedin: profileLinkedin,
+          github: profileGithub
+        });
+      }
+    } catch (err) {
+      console.error("Error saving profile details:", err);
+      showToast('Failed to save profile: ' + err.message, 'error');
+    }
+  };
+
+  const handleSaveCloudinaryUrl = async (e) => {
+    e.preventDefault();
+    if (!cloudinaryUrl.trim() || !currentUser || !supabase) {
+      showToast('Please paste a valid video URL.', 'error');
+      return;
+    }
+
+    try {
+      const { error } = await supabase.from('candidate_profiles').upsert({
+        user_id: currentUser.id,
+        video_url: cloudinaryUrl.trim(),
+        video_duration: 'Cloudinary Link'
+      });
+
+      if (error) throw error;
+
+      setProfileVideoUrl(cloudinaryUrl.trim());
+      setRecordedVideo(cloudinaryUrl.trim());
+      setCloudinaryUrl('');
+      showToast('External video resume linked successfully!', 'success');
+
+      if (onUpdateProfile) {
+        onUpdateProfile({ videoResumeUrl: cloudinaryUrl.trim(), videoDuration: 'Cloudinary Link' });
+      }
+    } catch (err) {
+      console.error("Error linking video URL:", err);
+      showToast('Failed to link video URL: ' + err.message, 'error');
+    }
+  };
+
+  const handleGenerateJobs = async (e) => {
+    if (e) e.preventDefault();
+    if (!searchDomain.trim()) {
+      showToast('Please enter a target job domain (e.g. React Developer)', 'error');
+      return;
+    }
+
+    setIsGeneratingJobs(true);
+    const geminiApiKey = import.meta.env.VITE_GEMINI_API_KEY;
+
+    try {
+      const prompt = `You are a professional talent acquisition lead. 
+Generate 3 realistic, high-quality, professional job openings in the domain: "${searchDomain.trim()}".
+Make them look like actual, premium jobs posted on LinkedIn.
+Return a JSON array of objects, where each object has these exact fields:
+[
+  {
+    "id": "job-gemini-" + unique random string,
+    "title": "Professional Job Title",
+    "company": "Real or realistic company name",
+    "logo": "A suitable single emoji representing the company (e.g. 💻, 🧠, 🎨, ☁️, 🌐, 🚀, 📈, 🔒)",
+    "location": "Location (e.g. San Francisco, CA (Hybrid) or Remote (US/Canada))",
+    "salary": "Salary range (e.g. $120k - $150k)",
+    "type": "Full-time" or "Contract" or "Part-time",
+    "skills": ["Skill1", "Skill2", "Skill3", "Skill4", "Skill5", "Skill6"],
+    "description": "A highly descriptive, engaging paragraph outlining the role, expectations, and why it is a great opportunity."
+  }
+]
+Do NOT wrap the response in markdown blocks like \`\`\`json or add extra text. Return ONLY the raw valid JSON array string.`;
+
+      let generatedJobs = [];
+
+      if (geminiApiKey && geminiApiKey !== 'YOUR_GEMINI_API_KEY') {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiApiKey}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            contents: [{
+              parts: [{
+                text: prompt
+              }]
+            }]
+          })
+        });
+
+        const resData = await response.json();
+        if (resData && resData.candidates && resData.candidates[0] && resData.candidates[0].content && resData.candidates[0].content.parts && resData.candidates[0].content.parts[0].text) {
+          const rawText = resData.candidates[0].content.parts[0].text.trim();
+          const cleanJsonText = rawText.replace(/^```json\s*/i, '').replace(/\s*```$/i, '').trim();
+          generatedJobs = JSON.parse(cleanJsonText);
+        } else {
+          throw new Error("Invalid output format from Gemini");
+        }
+      } else {
+        // High fidelity offline fallback if no Gemini key
+        showToast("Gemini key unlinked. Running local job generation engine.", "success");
+        const domainText = searchDomain.trim();
+        generatedJobs = [
+          {
+            id: `job-gemini-${Date.now()}-1`,
+            title: `Senior ${domainText} Specialist`,
+            company: "TechScale Innovations",
+            logo: "🚀",
+            location: "Remote (Global)",
+            salary: "$130k - $170k",
+            type: "Full-time",
+            skills: [domainText, "React", "TypeScript", "Node.js", "System Design", "APIs"],
+            description: `We are searching for a brilliant engineer specialized in ${domainText} to scale our collaboration tools. You will lead responsive architectural design and build highly inclusive interfaces.`
+          },
+          {
+            id: `job-gemini-${Date.now()}-2`,
+            title: `${domainText} Lead Architect`,
+            company: "Apex Systems",
+            logo: "🧠",
+            location: "Austin, TX (Hybrid)",
+            salary: "$150k - $190k",
+            type: "Full-time",
+            skills: [domainText, "System Architecture", "Scalability", "AWS", "Kubernetes"],
+            description: `Join our high-performance engineering cell to drive core ${domainText} paradigms. We value clean refactoring, deep technical ownership, and pixel-perfect deployments.`
+          },
+          {
+            id: `job-gemini-${Date.now()}-3`,
+            title: `Associate ${domainText} Engineer`,
+            company: "NextGen Cloud Labs",
+            logo: "☁️",
+            location: "San Jose, CA (On-site)",
+            salary: "$90k - $120k",
+            type: "Full-time",
+            skills: [domainText, "JavaScript", "SQL", "Git", "Docker"],
+            description: `Excellent opportunity for an associate engineer passionate about ${domainText} to participate in enterprise refactoring and cloud optimization cycles.`
+          }
+        ];
+      }
+
+      if (generatedJobs && generatedJobs.length > 0) {
+        // Save to Supabase so it's globally persistent
+        if (supabase) {
+          try {
+            // Dynamic column inspection
+            let jobsColumns = [];
+            try {
+              // Method A: Select 1 row to get keys (works if table is seeded)
+              const { data: sampleCol } = await supabase.from('jobs').select('*').limit(1);
+              if (sampleCol && sampleCol.length > 0) {
+                jobsColumns = Object.keys(sampleCol[0]);
+              } else {
+                // Method B: OPTIONS OpenAPI schema fetch (works if table is empty)
+                const sUrl = import.meta.env.VITE_SUPABASE_URL;
+                const sKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+                if (sUrl && sKey) {
+                  const res = await fetch(`${sUrl}/rest/v1/jobs`, {
+                    method: 'OPTIONS',
+                    headers: {
+                      'apikey': sKey,
+                      'Authorization': `Bearer ${sKey}`
+                    }
+                  });
+                  if (res.ok) {
+                    const schema = await res.json();
+                    if (schema && schema.definitions && schema.definitions.jobs) {
+                      jobsColumns = Object.keys(schema.definitions.jobs.properties || {});
+                    } else if (schema && schema.paths && schema.paths['/jobs']) {
+                      const postParams = schema.paths['/jobs']?.post?.parameters || [];
+                      const bodyParam = postParams.find(p => p.in === 'body');
+                      if (bodyParam && bodyParam.schema && bodyParam.schema.properties) {
+                        jobsColumns = Object.keys(bodyParam.schema.properties);
+                      }
+                    }
+                  }
+                }
+              }
+            } catch (colErr) {
+              console.warn("Failed to dynamically inspect jobs columns in CandidateWorkspace:", colErr);
+            }
+
+            // Method C: Individual column existence checks failsafe
+            const criticalCols = ['recruiter_id', 'user_id', 'company_id', 'skills', 'required_skills'];
+            for (const col of criticalCols) {
+              if (!jobsColumns.includes(col)) {
+                try {
+                  const { error } = await supabase.from('jobs').select(col).limit(0);
+                  if (!error) jobsColumns.push(col);
+                } catch (e) {}
+              }
+            }
+
+            // Map and clean candidate jobs
+            const { data: { user: activeUser } } = await supabase.auth.getUser();
+            const finalJobs = generatedJobs.map(job => {
+              const jobObj = {};
+              
+              // Map all standard fields if they are supported
+              if (jobsColumns.includes('title') || jobsColumns.length === 0) jobObj.title = job.title;
+              if (jobsColumns.includes('description') || jobsColumns.length === 0) jobObj.description = job.description;
+              if (jobsColumns.includes('location') || jobsColumns.length === 0) jobObj.location = job.location;
+              if (jobsColumns.includes('logo') || jobsColumns.length === 0) jobObj.logo = job.logo;
+              if (jobsColumns.includes('salary') || jobsColumns.length === 0) jobObj.salary = job.salary;
+              if (jobsColumns.includes('type') || jobsColumns.length === 0) jobObj.type = job.type;
+              
+              // Skills mapping
+              if (jobsColumns.includes('skills') || jobsColumns.length === 0) jobObj.skills = job.skills;
+              if (jobsColumns.includes('required_skills')) jobObj.required_skills = job.skills;
+
+              // Company mapping
+              if (jobsColumns.includes('company') || jobsColumns.length === 0) jobObj.company = job.company;
+
+              // Auth mapping to satisfy RLS
+              if (activeUser) {
+                if (jobsColumns.includes('recruiter_id') || jobsColumns.length === 0) {
+                  jobObj.recruiter_id = activeUser.id;
+                }
+                if (jobsColumns.includes('user_id')) {
+                  jobObj.user_id = activeUser.id;
+                }
+                if (jobsColumns.includes('company_id')) {
+                  jobObj.company_id = activeUser.id;
+                }
+              }
+
+              // Status field
+              if (jobsColumns.includes('status')) jobObj.status = 'Active';
+
+              return jobObj;
+            });
+
+            const { error: insertErr } = await supabase.from('jobs').insert(finalJobs);
+            if (insertErr) {
+              console.error("Failed to persist generated jobs in database:", insertErr);
+            }
+          } catch (dbErr) {
+            console.error("Failed to persist AI jobs in database:", dbErr);
+          }
+        }
+
+        // Add to parent state
+        if (onAddJobs) {
+          onAddJobs(generatedJobs);
+        }
+
+        showToast(`Successfully generated 3 real job listings for "${searchDomain.trim()}"!`, 'success');
+        setSearchDomain('');
+      } else {
+        showToast('AI yielded an empty list. Please try another domain keyword.', 'error');
+      }
+    } catch (err) {
+      console.error("Gemini job generation failed:", err);
+      showToast('AI generation failed: ' + err.message, 'error');
+    } finally {
+      setIsGeneratingJobs(false);
+    }
   };
 
   const formatTime = (secs) => {
@@ -875,16 +1433,85 @@ Do NOT wrap the response in markdown blocks like \`\`\`json or add extra text. R
     return `${mins}:${remainSecs < 10 ? '0' : ''}${remainSecs}`;
   };
 
+  if (loading) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center min-h-[calc(100vh-120px)] bg-[#050816] text-[#F1F5F9]">
+        <div className="relative flex flex-col items-center gap-4">
+          <div className="w-12 h-12 rounded-full border-4 border-purple-600/10 border-t-purple-500 animate-spin"></div>
+          <span className="text-xs font-bold text-slate-400 tracking-wider uppercase animate-pulse">Initializing Candidate Workspace...</span>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex-1 flex flex-col md:flex-row min-h-0 bg-[#050816]">
+    <div className="flex-1 flex flex-col md:flex-row min-h-0 bg-[#050816] relative">
+      {/* Premium Toast Notification Overlay */}
+      {toast && (
+        <div className={`fixed top-20 right-6 z-[2000] p-4 rounded-xl shadow-2xl border flex items-center gap-3 animate-slide-in font-bold text-xs ${
+          toast.type === 'success' 
+            ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-400' 
+            : 'bg-red-500/10 border-red-500/25 text-red-400'
+        }`}>
+          {toast.type === 'success' ? <ShieldCheck className="w-5 h-5 text-emerald-400" /> : <AlertCircle className="w-5 h-5 text-red-400" />}
+          <span>{toast.message}</span>
+        </div>
+      )}
+
+      {/* Mobile Hamburger Header (visible only on mobile) */}
+      <div className="flex md:hidden items-center justify-between px-6 py-4 bg-[#0B1020] border-b border-white/5 shrink-0 z-40 w-full select-none">
+        <div className="flex items-center gap-3">
+          <img 
+            src={activeCandidate?.avatar} 
+            alt={activeCandidate?.name}
+            className="w-8 h-8 rounded-lg object-cover border border-purple-500/30 font-bold"
+            onError={(e) => {
+              e.target.src = 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=120&h=120';
+            }}
+          />
+          <div>
+            <h3 className="font-bold text-xs text-white truncate max-w-[130px] leading-tight">{activeCandidate?.name}</h3>
+            <span className="text-[8px] font-bold text-purple-400 block">Candidate Portfolio</span>
+          </div>
+        </div>
+        <button 
+          onClick={() => setSidebarOpen(true)}
+          className="p-2 rounded-lg border border-white/10 text-slate-300 hover:text-white hover:bg-white/5 transition-all cursor-pointer"
+        >
+          <Menu className="w-4 h-4" />
+        </button>
+      </div>
+
+      {/* Sidebar Mobile Overlay Backdrop */}
+      {sidebarOpen && (
+        <div 
+          onClick={() => setSidebarOpen(false)}
+          className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[999] md:hidden animate-fade-in"
+        />
+      )}
+
       {/* Sidebar Nav */}
-      <aside className="w-full md:w-64 bg-[#0B1020]/90 border-r border-white/5 p-6 flex flex-col gap-2 shrink-0">
+      <aside className={`fixed inset-y-0 left-0 z-[1000] w-64 bg-[#0B1020] border-r border-white/5 p-6 flex flex-col gap-2 transition-transform duration-300 ease-in-out md:static md:translate-x-0 ${
+        sidebarOpen ? 'translate-x-0' : '-translate-x-full'
+      } shrink-0`}>
+        
+        {/* Mobile Sidebar Close Header */}
+        <div className="flex md:hidden justify-between items-center mb-4 pb-2 border-b border-white/5 select-none">
+          <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">Candidate Menu</span>
+          <button 
+            onClick={() => setSidebarOpen(false)}
+            className="p-1 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
         {/* Candidate Mini Profile */}
-        <div className="flex items-center gap-3.5 mb-6 pb-6 border-b border-white/5">
-          <div className="relative">
+        <div className="flex items-center gap-3.5 mb-6 pb-6 border-b border-white/5 select-none">
+          <div className="relative shrink-0">
             <img 
-              src={activeCandidate.avatar} 
-              alt={activeCandidate.name}
+              src={activeCandidate?.avatar} 
+              alt={activeCandidate?.name}
               className="w-12 h-12 rounded-xl object-cover border border-purple-500/30"
               onError={(e) => {
                 e.target.src = 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=120&h=120';
@@ -896,17 +1523,17 @@ Do NOT wrap the response in markdown blocks like \`\`\`json or add extra text. R
               </span>
             )}
           </div>
-          <div>
-            <h3 className="font-bold text-sm text-white truncate max-w-[130px]">{activeCandidate.name}</h3>
-            <p className="text-[10px] text-slate-400 truncate max-w-[130px]">{activeCandidate.title}</p>
+          <div className="min-w-0">
+            <h3 className="font-bold text-sm text-white truncate max-w-[130px] leading-tight">{activeCandidate?.name}</h3>
+            <p className="text-[10px] text-slate-400 truncate max-w-[130px] mt-0.5">{activeCandidate?.title}</p>
           </div>
         </div>
 
         {/* Navigation tabs */}
-        <nav className="flex flex-col gap-1.5 flex-1">
+        <nav className="flex flex-col gap-1.5 flex-1 overflow-y-auto pr-1 scrollbar-thin">
           <button 
-            onClick={() => setActiveTab('dashboard')}
-            className={`flex items-center gap-3 px-4 py-2.5 rounded-lg text-xs font-bold text-left transition-all ${
+            onClick={() => { setActiveTab('dashboard'); setSidebarOpen(false); }}
+            className={`flex items-center gap-3 px-4 py-2.5 rounded-lg text-xs font-bold text-left transition-all cursor-pointer ${
               activeTab === 'dashboard' ? 'bg-purple-600/20 text-purple-300 border border-purple-500/30' : 'text-slate-400 hover:text-white hover:bg-white/5'
             }`}
           >
@@ -915,10 +1542,8 @@ Do NOT wrap the response in markdown blocks like \`\`\`json or add extra text. R
           </button>
           
           <button 
-            onClick={() => {
-              setActiveTab('kyc');
-            }}
-            className={`flex items-center gap-3 px-4 py-2.5 rounded-lg text-xs font-bold text-left transition-all ${
+            onClick={() => { setActiveTab('kyc'); setSidebarOpen(false); }}
+            className={`flex items-center gap-3 px-4 py-2.5 rounded-lg text-xs font-bold text-left transition-all cursor-pointer ${
               activeTab === 'kyc' ? 'bg-purple-600/20 text-purple-300 border border-purple-500/30' : 'text-slate-400 hover:text-white hover:bg-white/5'
             }`}
           >
@@ -927,8 +1552,8 @@ Do NOT wrap the response in markdown blocks like \`\`\`json or add extra text. R
           </button>
 
           <button 
-            onClick={() => setActiveTab('profile')}
-            className={`flex items-center gap-3 px-4 py-2.5 rounded-lg text-xs font-bold text-left transition-all ${
+            onClick={() => { setActiveTab('profile'); setSidebarOpen(false); }}
+            className={`flex items-center gap-3 px-4 py-2.5 rounded-lg text-xs font-bold text-left transition-all cursor-pointer ${
               activeTab === 'profile' ? 'bg-purple-600/20 text-purple-300 border border-purple-500/30' : 'text-slate-400 hover:text-white hover:bg-white/5'
             }`}
           >
@@ -937,10 +1562,31 @@ Do NOT wrap the response in markdown blocks like \`\`\`json or add extra text. R
           </button>
 
           <button 
-            onClick={() => {
-              setActiveTab('video');
-            }}
-            className={`flex items-center gap-3 px-4 py-2.5 rounded-lg text-xs font-bold text-left transition-all ${
+            onClick={() => { setActiveTab('resume-analysis'); setSidebarOpen(false); }}
+            className={`flex items-center gap-3 px-4 py-2.5 rounded-lg text-xs font-bold text-left transition-all cursor-pointer ${
+              activeTab === 'resume-analysis' ? 'bg-purple-600/20 text-purple-300 border border-purple-500/30' : 'text-slate-400 hover:text-white hover:bg-white/5'
+            }`}
+          >
+            <FileCheck2 className="w-4 h-4 text-purple-400" />
+            Resume Analysis
+            <span className="ml-auto text-[9px] font-bold px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/20 animate-pulse">
+              ✦ AI Score
+            </span>
+          </button>
+
+          <button 
+            onClick={() => { setActiveTab('assessments'); setSidebarOpen(false); }}
+            className={`flex items-center gap-3 px-4 py-2.5 rounded-lg text-xs font-bold text-left transition-all cursor-pointer ${
+              activeTab === 'assessments' ? 'bg-purple-600/20 text-purple-300 border border-purple-500/30' : 'text-slate-400 hover:text-white hover:bg-white/5'
+            }`}
+          >
+            <Award className="w-4 h-4 text-purple-400 animate-pulse" />
+            Skill Assessments
+          </button>
+
+          <button 
+            onClick={() => { setActiveTab('video'); setSidebarOpen(false); }}
+            className={`flex items-center gap-3 px-4 py-2.5 rounded-lg text-xs font-bold text-left transition-all cursor-pointer ${
               activeTab === 'video' ? 'bg-purple-600/20 text-purple-300 border border-purple-500/30' : 'text-slate-400 hover:text-white hover:bg-white/5'
             }`}
           >
@@ -949,34 +1595,44 @@ Do NOT wrap the response in markdown blocks like \`\`\`json or add extra text. R
           </button>
 
           <button 
-            onClick={() => setActiveTab('jobs')}
-            className={`flex items-center gap-3 px-4 py-2.5 rounded-lg text-xs font-bold text-left transition-all ${
+            onClick={() => { setActiveTab('jobs'); setSidebarOpen(false); }}
+            className={`flex items-center gap-3 px-4 py-2.5 rounded-lg text-xs font-bold text-left transition-all cursor-pointer ${
               activeTab === 'jobs' ? 'bg-purple-600/20 text-purple-300 border border-purple-500/30' : 'text-slate-400 hover:text-white hover:bg-white/5'
             }`}
           >
             <Briefcase className="w-4 h-4" />
-            Find Tech Jobs
+            Find Job Opening
             <span className="ml-auto text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/20">
               Matches
             </span>
           </button>
 
           <button 
-            onClick={() => setActiveTab('chat')}
-            className={`flex items-center gap-3 px-4 py-2.5 rounded-lg text-xs font-bold text-left transition-all ${
+            onClick={() => { setActiveTab('career-path'); setSidebarOpen(false); }}
+            className={`flex items-center gap-3 px-4 py-2.5 rounded-lg text-xs font-bold text-left transition-all cursor-pointer ${
+              activeTab === 'career-path' ? 'bg-purple-600/20 text-purple-300 border border-purple-500/30' : 'text-slate-400 hover:text-white hover:bg-white/5'
+            }`}
+          >
+            <Sparkles className="w-4 h-4 text-amber-400 animate-pulse" />
+            Career Path
+          </button>
+
+          <button 
+            onClick={() => { setActiveTab('chat'); setSidebarOpen(false); }}
+            className={`flex items-center gap-3 px-4 py-2.5 rounded-lg text-xs font-bold text-left transition-all cursor-pointer ${
               activeTab === 'chat' ? 'bg-purple-600/20 text-purple-300 border border-purple-500/30' : 'text-slate-400 hover:text-white hover:bg-white/5'
             }`}
           >
             <MessageSquare className="w-4 h-4" />
             Hiring Chat
-            {activeCandidate.chatHistory && activeCandidate.chatHistory.length > 0 && (
+            {activeCandidate?.chatHistory && activeCandidate.chatHistory.length > 0 && (
               <span className="ml-auto w-2.5 h-2.5 rounded-full bg-purple-500 animate-pulse"></span>
             )}
           </button>
 
           <button 
-            onClick={() => setActiveTab('practice')}
-            className={`flex items-center gap-3 px-4 py-2.5 rounded-lg text-xs font-bold text-left transition-all ${
+            onClick={() => { setActiveTab('practice'); setSidebarOpen(false); }}
+            className={`flex items-center gap-3 px-4 py-2.5 rounded-lg text-xs font-bold text-left transition-all cursor-pointer ${
               activeTab === 'practice' ? 'bg-purple-600/20 text-purple-300 border border-purple-500/30' : 'text-slate-400 hover:text-white hover:bg-white/5'
             }`}
           >
@@ -987,6 +1643,19 @@ Do NOT wrap the response in markdown blocks like \`\`\`json or add extra text. R
             </span>
           </button>
         </nav>
+
+        {/* Sidebar Footer with Logout Button */}
+        <div className="pt-4 border-t border-white/5 mt-auto flex flex-col gap-3 select-none">
+          {onLogout && (
+            <button 
+              onClick={onLogout}
+              className="flex items-center gap-3 px-4 py-2.5 rounded-lg text-xs font-bold text-left text-slate-400 hover:text-red-400 hover:bg-red-500/10 border border-transparent hover:border-red-500/20 transition-all group cursor-pointer"
+            >
+              <LogOut className="w-4 h-4 text-slate-400 group-hover:text-red-400" />
+              <span>Log Out</span>
+            </button>
+          )}
+        </div>
       </aside>
 
       {/* Main Workspace Frame */}
@@ -1001,13 +1670,13 @@ Do NOT wrap the response in markdown blocks like \`\`\`json or add extra text. R
                 <p className="text-slate-400 text-xs">Track your application pipeline, upload requirements, and launch videos.</p>
               </div>
               <span className={`text-xs px-3 py-1.5 rounded-full font-bold border ${
-                activeCandidate.status === 'Offered' 
+                activeCandidate?.status === 'Offered' 
                   ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
-                  : activeCandidate.status === 'Rejected'
+                  : activeCandidate?.status === 'Rejected'
                   ? 'bg-red-500/10 text-red-400 border-red-500/20'
                   : 'bg-amber-500/10 text-amber-400 border-amber-500/20'
               }`}>
-                Current Stage: <span className="uppercase">{activeCandidate.status}</span>
+                Current Stage: <span className="uppercase">{activeCandidate?.status || 'Pending'}</span>
               </span>
             </div>
 
@@ -1035,7 +1704,7 @@ Do NOT wrap the response in markdown blocks like \`\`\`json or add extra text. R
                 <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400">VIDEO RESUME STATUS</span>
                 <p className="text-xl font-extrabold mt-2 flex items-center gap-1.5 text-purple-400">
                   <Video className="w-5 h-5" />
-                  {recordedVideo ? 'Video Linked (' + activeCandidate.videoDuration + ')' : 'No Video Uploaded'}
+                  {recordedVideo ? 'Video Linked (' + (activeCandidate?.videoDuration || '0:00') + ')' : 'No Video Uploaded'}
                 </p>
                 <button 
                   onClick={() => {
@@ -1063,70 +1732,153 @@ Do NOT wrap the response in markdown blocks like \`\`\`json or add extra text. R
             </div>
 
             {/* Pipeline Stage Tracker Visualizer */}
-            <div className="glass-card p-6 rounded-xl border border-white/5">
-              <h3 className="text-sm font-bold tracking-wider uppercase text-slate-300 mb-6">Interactive Application Tracker</h3>
-              
-              <div className="relative flex justify-between items-center max-w-3xl mx-auto px-4 py-8">
-                {/* Horizontal progress bar background */}
-                <div className="absolute top-[50%] left-0 w-full h-1 bg-[#11182D] -translate-y-[50%] -z-10"></div>
-                <div className={`absolute top-[50%] left-0 h-1 bg-gradient-to-r from-purple-500 to-blue-500 -translate-y-[50%] -z-10 transition-all`} style={{
-                  width: activeCandidate.status === 'Screened' ? '0%' : 
-                         activeCandidate.status === 'Shortlisted' ? '25%' : 
-                         activeCandidate.status === 'Interview Scheduled' ? '50%' :
-                         activeCandidate.status === 'Offered' ? '100%' : '100%'
-                }}></div>
-
-                {/* Circles for steps */}
-                {[
-                  { label: 'Screened', index: 0 },
-                  { label: 'Shortlisted', index: 1 },
-                  { label: 'Interview Scheduled', index: 2 },
-                  { label: 'Offered / Offer Received', index: 3 }
-                ].map(step => {
-                  const isCurrent = activeCandidate.status === step.label;
-                  const isPassed = 
-                    (activeCandidate.status === 'Screened' && step.index <= 0) ||
-                    (activeCandidate.status === 'Shortlisted' && step.index <= 1) ||
-                    (activeCandidate.status === 'Interview Scheduled' && step.index <= 2) ||
-                    (activeCandidate.status === 'Offered' && step.index <= 3);
-                    
+            <div className="flex flex-col gap-6">
+              {applications.length > 0 ? (
+                applications.map((app) => {
+                  const jobInfo = app.job || { title: 'Applying Role', company: 'Tech Partner', location: 'Remote', salary: '$100k - $120k' };
+                  const activeStage = app.status || 'Screened';
+                  
                   return (
-                    <div key={step.label} className="flex flex-col items-center relative">
-                      <div className={`w-8 h-8 rounded-full border-2 flex items-center justify-center font-bold text-xs transition-all ${
-                        isCurrent 
-                          ? 'bg-purple-600 border-purple-500 text-white scale-110 shadow-lg shadow-purple-500/30' 
-                          : isPassed 
-                          ? 'bg-gradient-to-tr from-purple-600 to-blue-500 border-transparent text-white' 
-                          : 'bg-[#0B1020] border-white/10 text-slate-500'
-                      }`}>
-                        {isPassed && !isCurrent ? '✓' : step.index + 1}
+                    <div key={app.id} className="glass-card p-6 rounded-xl border border-white/5 flex flex-col gap-5">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <span className="text-[10px] text-purple-400 font-bold uppercase tracking-wide block">{jobInfo.company}</span>
+                          <h3 className="text-base font-bold text-white mt-0.5">{jobInfo.title}</h3>
+                          <span className="text-[10.5px] text-slate-400 mt-1 block">{jobInfo.location} • {jobInfo.salary}</span>
+                        </div>
+                        <span className={`text-[10px] font-extrabold px-3 py-1 rounded-full uppercase tracking-wider border ${
+                          activeStage === 'Offered' 
+                            ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
+                            : activeStage === 'Rejected'
+                            ? 'bg-red-500/10 text-red-400 border-red-500/20'
+                            : 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                        }`}>
+                          {activeStage}
+                        </span>
                       </div>
-                      <span className={`text-[10px] font-semibold text-center mt-3 absolute -bottom-8 w-24 tracking-wide uppercase ${
-                        isCurrent ? 'text-purple-300 font-bold scale-105' : 'text-slate-500'
-                      }`}>
-                        {step.label.split(' ')[0]}
-                      </span>
+
+                      {/* Interactive Stage Step Visualizer */}
+                      <div className="relative flex justify-between items-center max-w-3xl mx-auto px-4 py-8 w-full z-10">
+                        {/* Progress Bar Line */}
+                        <div className="absolute top-[50%] left-0 w-full h-[3px] bg-[#11182D] -translate-y-[50%] -z-10"></div>
+                        <div 
+                          className="absolute top-[50%] left-0 h-[3px] bg-gradient-to-r from-purple-500 to-blue-500 -translate-y-[50%] -z-10 transition-all duration-1000 ease-out" 
+                          style={{
+                            width: activeStage === 'Screened' ? '0%' : 
+                                   activeStage === 'Shortlisted' ? '33.33%' : 
+                                   activeStage === 'Interview Scheduled' ? '66.66%' :
+                                   activeStage === 'Offered' ? '100%' : '100%'
+                          }}
+                        ></div>
+
+                        {/* Steps */}
+                        {[
+                          { label: 'Screened', index: 0 },
+                          { label: 'Shortlisted', index: 1 },
+                          { label: 'Interview Scheduled', index: 2 },
+                          { label: 'Offered', index: 3 }
+                        ].map((step) => {
+                          const isCurrent = activeStage === step.label;
+                          const isPassed = 
+                            (activeStage === 'Screened' && step.index <= 0) ||
+                            (activeStage === 'Shortlisted' && step.index <= 1) ||
+                            (activeStage === 'Interview Scheduled' && step.index <= 2) ||
+                            (activeStage === 'Offered' && step.index <= 3);
+
+                          return (
+                            <div key={step.label} className="flex flex-col items-center relative">
+                              <div className={`w-8 h-8 rounded-full border-2 flex items-center justify-center font-bold text-xs transition-all duration-700 ease-out ${
+                                isCurrent 
+                                  ? 'bg-purple-600 border-purple-500 text-white scale-110 shadow-lg shadow-purple-500/30' 
+                                  : isPassed 
+                                  ? 'bg-gradient-to-tr from-purple-600 to-blue-500 border-transparent text-white' 
+                                  : 'bg-[#0B1020] border-white/10 text-slate-500'
+                              }`}>
+                                {isPassed && !isCurrent ? '✓' : step.index + 1}
+                              </div>
+                              <span className={`text-[9px] font-bold text-center mt-3 absolute -bottom-8 w-24 tracking-wide uppercase transition-all duration-500 ${
+                                isCurrent ? 'text-purple-300 font-bold scale-105' : 'text-slate-500'
+                              }`}>
+                                {step.label}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {activeStage === 'Offered' && (
+                        <div className="mt-8 p-4 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-lg flex items-center gap-3 text-xs">
+                          <CheckCircle className="w-5 h-5 text-emerald-400 shrink-0" />
+                          <div>
+                            <span className="font-bold">Congratulations! Offer Received! 🎉</span>
+                            <p className="text-slate-400 mt-1">The hiring manager has reviewed your video resume and interview scorecard and generated an official contract. Check your hiring chat to connect!</p>
+                          </div>
+                        </div>
+                      )}
+
+                      {activeStage === 'Rejected' && (
+                        <div className="mt-8 p-4 bg-red-500/10 border border-red-500/20 text-red-400 rounded-lg flex items-center gap-3 text-xs">
+                          <AlertCircle className="w-5 h-5 text-red-400 shrink-0" />
+                          <div>
+                            <span className="font-bold">Application Status: Closed</span>
+                            <p className="text-slate-400 mt-1">We appreciate your time, but have decided to pursue other profiles whose skills match our immediate operational requirements at this stage.</p>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
-                })}
-              </div>
-
-              {activeCandidate.status === 'Rejected' && (
-                <div className="mt-12 p-4 bg-red-500/10 border border-red-500/20 text-red-400 rounded-lg flex items-center gap-3 text-xs">
-                  <AlertCircle className="w-5 h-5 text-red-400" />
-                  <div>
-                    <span className="font-bold">Application Status: Closed</span>
-                    <p className="text-slate-400 mt-1">We appreciate your time, but have decided to pursue candidates whose skills align more closely with our direct systems at this exact stage.</p>
+                })
+              ) : (
+                /* Fallback if no applications exist yet */
+                <div className="glass-card p-6 rounded-xl border border-white/5 flex flex-col gap-5">
+                  <div className="flex justify-between items-center">
+                    <span className="text-[10px] text-purple-400 font-bold uppercase tracking-wide block">Dynamic Active Tracker</span>
+                    <span className="text-[10px] font-extrabold px-3 py-1 rounded-full uppercase tracking-wider bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                      {activeCandidate?.status || 'Screened'}
+                    </span>
                   </div>
-                </div>
-              )}
+                  
+                  <div className="relative flex justify-between items-center max-w-3xl mx-auto px-4 py-8 w-full z-10">
+                    <div className="absolute top-[50%] left-0 w-full h-[3px] bg-[#11182D] -translate-y-[50%] -z-10"></div>
+                    <div className="absolute top-[50%] left-0 h-[3px] bg-gradient-to-r from-purple-500 to-blue-500 -translate-y-[50%] -z-10 transition-all duration-1000 ease-out" style={{
+                      width: activeCandidate?.status === 'Screened' ? '0%' : 
+                             activeCandidate?.status === 'Shortlisted' ? '33.33%' : 
+                             activeCandidate?.status === 'Interview Scheduled' ? '66.66%' :
+                             activeCandidate?.status === 'Offered' ? '100%' : '100%'
+                    }}></div>
 
-              {activeCandidate.status === 'Offered' && (
-                <div className="mt-12 p-5 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-lg flex items-center gap-3 text-xs">
-                  <CheckCircle className="w-5 h-5 text-emerald-400" />
-                  <div>
-                    <span className="font-bold">Congratulations! Offer Received! 🎉</span>
-                    <p className="text-slate-400 mt-1">The hiring manager has reviewed your virtual interview performance and generated an official contract. Check your messages or contact them in chat.</p>
+                    {[
+                      { label: 'Screened', index: 0 },
+                      { label: 'Shortlisted', index: 1 },
+                      { label: 'Interview Scheduled', index: 2 },
+                      { label: 'Offered', index: 3 }
+                    ].map(step => {
+                      const isCurrent = activeCandidate?.status === step.label;
+                      const isPassed = 
+                        (activeCandidate?.status === 'Screened' && step.index <= 0) ||
+                        (activeCandidate?.status === 'Shortlisted' && step.index <= 1) ||
+                        (activeCandidate?.status === 'Interview Scheduled' && step.index <= 2) ||
+                        (activeCandidate?.status === 'Offered' && step.index <= 3);
+                        
+                      return (
+                        <div key={step.label} className="flex flex-col items-center relative">
+                          <div className={`w-8 h-8 rounded-full border-2 flex items-center justify-center font-bold text-xs transition-all duration-700 ease-out ${
+                            isCurrent 
+                              ? 'bg-purple-600 border-purple-500 text-white scale-110 shadow-lg shadow-purple-500/30' 
+                              : isPassed 
+                              ? 'bg-gradient-to-tr from-purple-600 to-blue-500 border-transparent text-white' 
+                              : 'bg-[#0B1020] border-white/10 text-slate-500'
+                          }`}>
+                            {isPassed && !isCurrent ? '✓' : step.index + 1}
+                          </div>
+                          <span className={`text-[9px] font-bold text-center mt-3 absolute -bottom-8 w-24 tracking-wide uppercase transition-all duration-500 ${
+                            isCurrent ? 'text-purple-300 font-bold scale-105' : 'text-slate-500'
+                          }`}>
+                            {step.label}
+                          </span>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -1382,6 +2134,29 @@ Do NOT wrap the response in markdown blocks like \`\`\`json or add extra text. R
                     />
                   </div>
 
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-[10px] uppercase font-bold text-slate-400 block mb-1.5">LinkedIn Profile</label>
+                      <input 
+                        type="url" 
+                        placeholder="https://linkedin.com/in/username"
+                        value={profileLinkedin}
+                        onChange={(e) => setProfileLinkedin(e.target.value)}
+                        className="w-full bg-[#0B1020] border border-white/10 rounded-lg px-3 py-2 text-xs text-white focus:border-purple-500 outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] uppercase font-bold text-slate-400 block mb-1.5">GitHub Profile</label>
+                      <input 
+                        type="url" 
+                        placeholder="https://github.com/username"
+                        value={profileGithub}
+                        onChange={(e) => setProfileGithub(e.target.value)}
+                        className="w-full bg-[#0B1020] border border-white/10 rounded-lg px-3 py-2 text-xs text-white focus:border-purple-500 outline-none"
+                      />
+                    </div>
+                  </div>
+
                   {/* Skills tags */}
                   <div>
                     <label className="text-[10px] uppercase font-bold text-slate-400 block mb-1.5">Skills Portfolio</label>
@@ -1434,6 +2209,24 @@ Do NOT wrap the response in markdown blocks like \`\`\`json or add extra text. R
           </div>
         )}
 
+        {/* TAB: RESUME ANALYSIS */}
+        {activeTab === 'resume-analysis' && (
+          <ResumeAnalysis 
+            currentUser={currentUser}
+            fallbackCandidate={activeCandidate}
+            showToast={showToast}
+          />
+        )}
+
+        {/* TAB: SKILL ASSESSMENTS */}
+        {activeTab === 'assessments' && (
+          <SkillAssessments 
+            currentUser={currentUser}
+            fallbackCandidate={activeCandidate}
+            showToast={showToast}
+          />
+        )}
+
         {/* TAB 4: VIDEO RESUME RECORDER & PREVIEW STUDIO */}
         {activeTab === 'video' && (
           <div className="flex flex-col gap-6">
@@ -1450,6 +2243,14 @@ Do NOT wrap the response in markdown blocks like \`\`\`json or add extra text. R
                   <p className="mt-1 text-slate-300">{videoUploadErrorMsg}</p>
                 </div>
               </div>
+            )}
+
+            {/* Multilingual Support Selection (before recording) */}
+            {!isRecording && !recordedVideo && (
+              <MultilingualSupport 
+                selectedLang={videoLanguage} 
+                setSelectedLang={handleVideoLanguageChange} 
+              />
             )}
 
             <div className="grid md:grid-cols-2 gap-8 items-start">
@@ -1487,9 +2288,14 @@ Do NOT wrap the response in markdown blocks like \`\`\`json or add extra text. R
                   {/* Audio wave dynamic loop overlay */}
                   {isRecording && (
                     <div className="absolute bottom-4 left-4 right-4 flex items-center justify-between bg-black/80 border border-white/5 px-3 py-1.5 rounded-lg">
-                      <div className="flex items-center gap-1.5 text-[10px] text-red-400 font-bold uppercase tracking-wider">
-                        <span className="w-2.5 h-2.5 rounded-full bg-red-600 animate-ping"></span>
-                        Recording: {formatTime(recordingSeconds)}
+                      <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1.5 text-[10px] text-red-400 font-bold uppercase tracking-wider">
+                          <span className="w-2.5 h-2.5 rounded-full bg-red-600 animate-ping"></span>
+                          Recording: {formatTime(recordingSeconds)}
+                        </div>
+                        <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30 tracking-wider">
+                          Recording in: {videoLanguage} {SUPPORTED_LANGUAGES.find(l => l.id === videoLanguage)?.flag || '🇬🇧'}
+                        </span>
                       </div>
                       
                       {/* Interactive audio bars */}
@@ -1523,6 +2329,29 @@ Do NOT wrap the response in markdown blocks like \`\`\`json or add extra text. R
                       Record Resume Video
                     </button>
                   )}
+                </div>
+
+                {/* Cloudinary/External Video URL linker */}
+                <div className="glass-card p-5 rounded-2xl border border-white/5 flex flex-col gap-3 mt-4">
+                  <span className="font-bold text-xs uppercase tracking-wider text-slate-300">Link External Video Resume</span>
+                  <form onSubmit={handleSaveCloudinaryUrl} className="flex gap-2">
+                    <input 
+                      type="url" 
+                      placeholder="https://res.cloudinary.com/.../video.mp4"
+                      value={cloudinaryUrl}
+                      onChange={(e) => setCloudinaryUrl(e.target.value)}
+                      className="flex-1 bg-[#0B1020] border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white focus:border-purple-500 outline-none placeholder:text-slate-600 font-medium"
+                    />
+                    <button 
+                      type="submit"
+                      className="px-4 py-1.5 bg-gradient-to-r from-purple-600 to-blue-500 text-white font-bold rounded-lg text-xs hover:opacity-90 active:scale-95 transition-all shadow-md shadow-purple-500/10 shrink-0"
+                    >
+                      Save Link
+                    </button>
+                  </form>
+                  <span className="text-[10px] text-slate-500 leading-normal block">
+                    Paste a Cloudinary or other public MP4/WebM video URL. This will immediately map to your profile player.
+                  </span>
                 </div>
               </div>
 
@@ -1560,97 +2389,159 @@ Do NOT wrap the response in markdown blocks like \`\`\`json or add extra text. R
         {/* TAB 5: TECH JOB DIRECTORY & AI MATCHING */}
         {activeTab === 'jobs' && (
           <div className="flex flex-col gap-6">
-            <div className="border-b border-white/5 pb-4">
-              <h2 className="text-xl font-bold tracking-tight">Active Tech Job Directory</h2>
-              <p className="text-slate-400 text-xs">AI parses matching scores between your profile skills and job details in real time.</p>
+            <div className="border-b border-white/5 pb-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+              <div>
+                <h2 className="text-xl font-bold tracking-tight">Active Tech Job Directory</h2>
+                <p className="text-slate-400 text-xs">AI parses matching scores between your profile skills and job details in real time.</p>
+              </div>
+            </div>
+
+            {/* LinkedIn-style search & generation bar */}
+            <div className="glass-card p-5 rounded-2xl border border-white/5 bg-gradient-to-r from-purple-900/10 to-blue-900/10 flex flex-col gap-4">
+              <span className="font-extrabold text-xs uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+                <Sparkles className="w-4 h-4 text-purple-400 animate-pulse" />
+                Gemini AI Real-World Job Search
+              </span>
+              <form onSubmit={handleGenerateJobs} className="flex flex-col sm:flex-row gap-3">
+                <div className="relative flex-1">
+                  <Search className="absolute left-3.5 top-[50%] -translate-y-[50%] w-4 h-4 text-slate-500" />
+                  <input 
+                    type="text" 
+                    placeholder="Enter professional domain (e.g. AI Specialist, Next.js Developer, DevOps Lead...)"
+                    value={searchDomain}
+                    onChange={(e) => setSearchDomain(e.target.value)}
+                    className="w-full bg-[#050816]/90 border border-white/10 rounded-xl pl-10 pr-4 py-3 text-xs text-white focus:border-purple-500 outline-none placeholder:text-slate-600 font-semibold"
+                    disabled={isGeneratingJobs}
+                  />
+                </div>
+                <button 
+                  type="submit"
+                  disabled={isGeneratingJobs}
+                  className="px-6 py-3 bg-gradient-to-r from-purple-600 to-blue-500 hover:from-purple-500 hover:to-blue-400 text-white font-bold rounded-xl text-xs uppercase tracking-wider hover:opacity-90 active:scale-[0.98] transition-all flex items-center justify-center gap-2 shadow-lg shadow-purple-500/15 shrink-0"
+                >
+                  {isGeneratingJobs ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin text-white" />
+                      Searching AI...
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-4 h-4 text-white" />
+                      Search & Generate Real Jobs
+                    </>
+                  )}
+                </button>
+              </form>
+              <span className="text-[10px] text-slate-500 leading-normal block">
+                Powered by Gemini. Type a tech role to instantly search, create, and list matching jobs. They are automatically saved and synced into Supabase so you can apply instantly!
+              </span>
             </div>
 
             {/* List jobs */}
             <div className="grid gap-5">
-              {jobs.map(job => {
-                // Calculate match score
-                const matchingSkills = activeCandidate.skills.filter(s => 
-                  job.skills.some(js => js.toLowerCase().includes(s.toLowerCase()) || s.toLowerCase().includes(js.toLowerCase()))
-                );
-                const matchScore = Math.min(100, 50 + Math.round((matchingSkills.length / job.skills.length) * 50));
-                
-                const hasApplied = activeCandidate.appliedJobs.includes(job.id);
+              {(jobs && jobs.length > 0) ? (
+                jobs.map(job => {
+                  // Calculate match score
+                  const matchingSkills = (profileSkills || []).filter(s => 
+                    job.skills && job.skills.some(js => js.toLowerCase().includes(s.toLowerCase()) || s.toLowerCase().includes(js.toLowerCase()))
+                  );
+                  const matchScore = job.skills && job.skills.length > 0
+                    ? Math.min(100, 50 + Math.round((matchingSkills.length / job.skills.length) * 50))
+                    : 60;
+                  
+                  const hasApplied = (activeCandidate?.appliedJobs || []).includes(job.id);
 
-                return (
-                  <div 
-                    key={job.id}
-                    className="glass-card p-6 rounded-2xl border border-white/5 flex flex-col md:flex-row justify-between gap-6 glass-card-hover"
-                  >
-                    <div className="flex gap-4 items-start min-w-0">
-                      <div className="w-12 h-12 bg-gradient-to-tr from-purple-600/20 to-blue-500/20 border border-white/10 rounded-xl flex items-center justify-center text-2xl shadow-md">
-                        {job.logo}
+                  return (
+                    <div 
+                      key={job.id}
+                      className="glass-card p-6 rounded-2xl border border-white/5 flex flex-col md:flex-row justify-between gap-6 glass-card-hover"
+                    >
+                      <div className="flex gap-4 items-start min-w-0">
+                        <div className="w-12 h-12 bg-gradient-to-tr from-purple-600/20 to-blue-500/20 border border-white/10 rounded-xl flex items-center justify-center text-2xl shadow-md">
+                          {job.logo || '💼'}
+                        </div>
+                        <div className="min-w-0">
+                          <span className="text-[10px] text-purple-400 font-bold uppercase tracking-wide block">{job.company}</span>
+                          <h3 className="text-base font-bold text-white leading-snug mt-0.5">{job.title}</h3>
+                          
+                          <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400 mt-2">
+                            <span className="flex items-center gap-1"><MapPin className="w-3.5 h-3.5 text-slate-500" /> {job.location}</span>
+                            <span>•</span>
+                            <span>{job.salary}</span>
+                            <span>•</span>
+                            <span className="px-2 py-0.5 rounded bg-white/5 border border-white/10 text-[10px] font-semibold text-slate-300">{job.type}</span>
+                          </div>
+
+                          <p className="text-xs text-slate-300 leading-relaxed mt-4 max-w-xl">
+                            {job.description}
+                          </p>
+
+                          {/* Skill Requirements list */}
+                          <div className="flex flex-wrap gap-1.5 mt-4">
+                            {job.skills && job.skills.map(skill => {
+                              const isMatched = (profileSkills || []).some(cs => cs.toLowerCase().includes(skill.toLowerCase()) || skill.toLowerCase().includes(cs.toLowerCase()));
+                              return (
+                                <span 
+                                  key={skill}
+                                  className={`text-[10px] font-bold px-2 py-0.5 rounded border transition-colors ${
+                                    isMatched 
+                                      ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
+                                      : 'bg-white/5 text-slate-400 border-white/5'
+                                  }`}
+                                >
+                                  {skill}
+                                </span>
+                              );
+                            })}
+                          </div>
+                        </div>
                       </div>
-                      <div className="min-w-0">
-                        <span className="text-[10px] text-purple-400 font-bold uppercase tracking-wide block">{job.company}</span>
-                        <h3 className="text-base font-bold text-white leading-snug mt-0.5">{job.title}</h3>
-                        
-                        <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400 mt-2">
-                          <span className="flex items-center gap-1"><MapPin className="w-3.5 h-3.5 text-slate-500" /> {job.location}</span>
-                          <span>•</span>
-                          <span>{job.salary}</span>
-                          <span>•</span>
-                          <span className="px-2 py-0.5 rounded bg-white/5 border border-white/10 text-[10px] font-semibold text-slate-300">{job.type}</span>
+
+                      {/* AI score & CTA */}
+                      <div className="flex flex-col justify-between items-end md:text-right shrink-0">
+                        <div className="flex flex-col items-end gap-1">
+                          <span className="text-[9px] uppercase font-bold tracking-wider text-slate-400">Skill Alignment</span>
+                          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-sm font-extrabold shadow-sm shadow-emerald-500/5">
+                            <Sparkles className="w-4 h-4" />
+                            {matchScore}% AI Match
+                          </div>
                         </div>
 
-                        <p className="text-xs text-slate-300 leading-relaxed mt-4 max-w-xl">
-                          {job.description}
-                        </p>
-
-                        {/* Skill Requirements list */}
-                        <div className="flex flex-wrap gap-1.5 mt-4">
-                          {job.skills.map(skill => {
-                            const isMatched = activeCandidate.skills.some(cs => cs.toLowerCase().includes(skill.toLowerCase()) || skill.toLowerCase().includes(cs.toLowerCase()));
-                            return (
-                              <span 
-                                key={skill}
-                                className={`text-[10px] font-bold px-2 py-0.5 rounded border transition-colors ${
-                                  isMatched 
-                                    ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
-                                    : 'bg-white/5 text-slate-400 border-white/5'
-                                }`}
-                              >
-                                {skill}
-                              </span>
-                            );
-                          })}
-                        </div>
+                        {hasApplied ? (
+                          <span className="w-full md:w-auto px-6 py-2.5 bg-white/5 border border-white/10 rounded-xl text-slate-400 text-xs font-bold text-center flex items-center gap-2 justify-center">
+                            ✓ Already Applied
+                          </span>
+                        ) : (
+                          <button 
+                            onClick={() => onApplyJob(job.id)}
+                            className="w-full md:w-auto px-6 py-2.5 bg-gradient-to-r from-purple-600 to-blue-500 text-white font-bold rounded-xl text-xs hover:opacity-90 active:scale-[0.98] transition-all flex items-center gap-1.5 justify-center shadow-md shadow-purple-500/10"
+                          >
+                            Apply with Video Resume
+                            <ArrowRight className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                       </div>
                     </div>
-
-                    {/* AI score & CTA */}
-                    <div className="flex flex-col justify-between items-end md:text-right shrink-0">
-                      <div className="flex flex-col items-end gap-1">
-                        <span className="text-[9px] uppercase font-bold tracking-wider text-slate-400">Skill Alignment</span>
-                        <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-sm font-extrabold shadow-sm shadow-emerald-500/5">
-                          <Sparkles className="w-4 h-4" />
-                          {matchScore}% AI Match
-                        </div>
-                      </div>
-
-                      {hasApplied ? (
-                        <span className="w-full md:w-auto px-6 py-2.5 bg-white/5 border border-white/10 rounded-xl text-slate-400 text-xs font-bold text-center flex items-center gap-2 justify-center">
-                          ✓ Already Applied
-                        </span>
-                      ) : (
-                        <button 
-                          onClick={() => onApplyJob(job.id)}
-                          className="w-full md:w-auto px-6 py-2.5 bg-gradient-to-r from-purple-600 to-blue-500 text-white font-bold rounded-xl text-xs hover:opacity-90 active:scale-[0.98] transition-all flex items-center gap-1.5 justify-center shadow-md shadow-purple-500/10"
-                        >
-                          Apply with Video Resume
-                          <ArrowRight className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                    </div>
+                  );
+                })
+              ) : (
+                <div className="glass-card p-12 rounded-2xl border border-white/5 flex flex-col items-center justify-center text-center max-w-xl mx-auto my-8">
+                  <div className="w-16 h-16 bg-purple-600/10 border border-purple-500/20 rounded-full flex items-center justify-center text-purple-400 mb-6 animate-pulse">
+                    <Briefcase className="w-8 h-8" />
                   </div>
-                );
-              })}
+                  <h3 className="font-extrabold text-base text-white mb-2">No Job Openings Loaded</h3>
+                  <p className="text-slate-400 text-xs leading-relaxed mb-6 max-w-sm">
+                    We couldn't detect any job listings. Use the AI search bar above to fetch and populate real job listings for any domain instantly!
+                  </p>
+                </div>
+              )}
             </div>
           </div>
+        )}
+
+        {/* TAB 5B: CAREER ROADMAP & MARKET GAP ANALYTICS */}
+        {activeTab === 'career-path' && (
+          <CareerRecommendations activeCand={activeCandidate} setActiveTab={setActiveTab} />
         )}
 
         {/* TAB 6: DUAL INTERACTIVE HIRING CHAT & SCHEDULING */}
@@ -2155,6 +3046,13 @@ Do NOT wrap the response in markdown blocks like \`\`\`json or add extra text. R
           </div>
         )}
 
+      {toast && (
+        <Toast 
+          message={toast.message} 
+          type={toast.type} 
+          onClose={() => setToast(null)} 
+        />
+      )}
       </section>
     </div>
   );

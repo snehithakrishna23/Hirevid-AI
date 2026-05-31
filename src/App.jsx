@@ -12,12 +12,14 @@ import {
   LogOut,
   Layers,
   Calendar,
-  MessageSquare
+  MessageSquare,
+  X
 } from 'lucide-react';
 import { supabase } from './lib/supabaseClient';
 import CandidateWorkspace from './components/CandidateWorkspace';
 import RecruiterWorkspace from './components/RecruiterWorkspace';
 import AuthScreen from './components/AuthScreen';
+import ErrorBoundary from './components/ErrorBoundary';
 
 
 // Pre-seeded mock jobs database
@@ -173,13 +175,19 @@ export default function App() {
   const [accuracyCount, setAccuracyCount] = useState(0);
   const [speedCount, setSpeedCount] = useState(0);
 
+  // Demo mode selector modal state
+  const [showDemoModal, setShowDemoModal] = useState(false);
+
   // Global States synced with localStorage
   const [view, setView] = useState(() => {
     const currentUserSaved = localStorage.getItem('hirevid_currentUser');
     if (currentUserSaved) {
+      // Only restore dashboard view if an active user session exists
       return JSON.parse(currentUserSaved).role; // 'candidate' or 'recruiter'
     }
-    return localStorage.getItem('hirevid_view') || 'landing'; // 'landing', 'login', 'signup', 'candidate', 'recruiter'
+    // If no user session, always start at landing — never restore a stale dashboard view
+    const savedView = localStorage.getItem('hirevid_view') || 'landing';
+    return ['candidate', 'recruiter'].includes(savedView) ? 'landing' : savedView;
   });
 
   useEffect(() => {
@@ -241,33 +249,213 @@ export default function App() {
   const [authFormRole, setAuthFormRole] = useState('candidate');
 
   const [candidates, setCandidates] = useState(() => {
+    const savedSession = localStorage.getItem('hirevid_currentUser');
+    if (savedSession) {
+      const u = JSON.parse(savedSession);
+      if (u.email !== 'sarah.j@devmail.com' && u.email !== 'recruiter@vividai.com') {
+        // Real production users start fresh
+        return [];
+      }
+    }
     const saved = localStorage.getItem('hirevid_candidates');
     return saved ? JSON.parse(saved) : INITIAL_CANDIDATES;
   });
 
-  const [jobs, setJobsState] = useState(MOCK_JOBS);
+  const [jobs, setJobsState] = useState(() => {
+    const savedSession = localStorage.getItem('hirevid_currentUser');
+    if (savedSession) {
+      const u = JSON.parse(savedSession);
+      if (u.role === 'recruiter' && u.email !== 'recruiter@vividai.com') {
+        // Real production recruiters start fresh with no jobs posted yet
+        return [];
+      }
+    }
+    return MOCK_JOBS;
+  });
 
   const [interviews, setInterviews] = useState(() => {
+    const savedSession = localStorage.getItem('hirevid_currentUser');
+    if (savedSession) {
+      const u = JSON.parse(savedSession);
+      if (u.email !== 'sarah.j@devmail.com' && u.email !== 'recruiter@vividai.com') {
+        // Real production users start fresh
+        return [];
+      }
+    }
     const saved = localStorage.getItem('hirevid_interviews');
     return saved ? JSON.parse(saved) : INITIAL_INTERVIEWS;
   });
 
   // Track active logged-in candidate (simulating 'cand-1' Sarah Jenkins or a new builder)
-  const [currentCandidateId, setCurrentCandidateId] = useState('cand-1');
+  const [currentCandidateId, setCurrentCandidateId] = useState(() => {
+    const savedSession = localStorage.getItem('hirevid_currentUser');
+    if (savedSession) {
+      const u = JSON.parse(savedSession);
+      if (u.role === 'candidate') {
+        return u.id;
+      }
+    }
+    return 'cand-1';
+  });
 
   // Active view tabs for Candidate or Recruiter workspaces
   const [candidateActiveTab, setCandidateActiveTab] = useState('dashboard'); // 'dashboard', 'kyc', 'profile', 'video', 'jobs', 'tracker'
   const [recruiterActiveTab, setRecruiterActiveTab] = useState('pipeline'); // 'pipeline', 'search', 'scheduler', 'chats', 'profile'
 
-  // Load from Supabase on mount
-  useEffect(() => {
-    if (supabase) {
-      loadSupabaseData();
+  const handleSignInSession = async (user) => {
+    try {
+      const { data: dbUser, error: dbError } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', user.id)
+        .single();
+
+      if (dbError || !dbUser) {
+        console.error("Failed to fetch user profile:", dbError);
+        return;
+      }
+
+      let companyName = '';
+      if (dbUser.role === 'recruiter') {
+        const { data: comp } = await supabase
+          .from('companies')
+          .select('company_name')
+          .eq('recruiter_id', user.id)
+          .maybeSingle();
+        companyName = comp?.company_name || '';
+      }
+
+      const sessionUser = {
+        id: dbUser.id,
+        name: dbUser.name,
+        email: dbUser.email,
+        role: dbUser.role,
+        company: companyName
+      };
+
+      setCurrentUser(sessionUser);
+      if (dbUser.role === 'candidate') {
+        setCurrentCandidateId(dbUser.id);
+      }
+      setView(dbUser.role);
+    } catch (err) {
+      console.error("Error in handleSignInSession:", err);
     }
+  };
+
+  const handleDemoModeLogin = (role) => {
+    const mockUser = role === 'candidate'
+      ? { 
+          id: 'cand-1', 
+          name: 'Sarah Jenkins', 
+          email: 'sarah.j@devmail.com', 
+          role: 'candidate', 
+          company: '', 
+          isDemo: true 
+        }
+      : { 
+          id: 'recruiter-demo', 
+          name: 'LTI Mindtree Team', 
+          email: 'recruiter@ltimindtree.com', 
+          role: 'recruiter', 
+          company: 'LTI Mindtree', 
+          isDemo: true 
+        };
+
+    setCurrentCandidateId('cand-1');
+    setCurrentUser(mockUser);
+    localStorage.setItem('hirevid_currentUser', JSON.stringify(mockUser));
+    localStorage.setItem('hirevid_view', role);
+    setView(role);
+    setShowDemoModal(false);
+  };
+
+  // Load from Supabase and listen to auth changes on mount
+  useEffect(() => {
+    if (!supabase) return;
+
+    const checkSession = async () => {
+      try {
+        const { data: { session }, error } = await supabase.auth.getSession();
+        if (error) throw error;
+        
+        // Guard against racing and overwriting recovery view
+        const isRecovery = window.location.hash.includes('type=recovery') || window.location.href.includes('type=recovery');
+        
+        if (session?.user) {
+          if (isRecovery) {
+            setView('resetPassword');
+          } else {
+            await handleSignInSession(session.user);
+          }
+        } else {
+          const currentUserSaved = localStorage.getItem('hirevid_currentUser');
+          if (!currentUserSaved) {
+            if (!isRecovery) {
+              setCurrentUser(null);
+              setView('landing');
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Error checking session:", err);
+      }
+    };
+
+    checkSession();
+
+    // Detect Supabase password-reset callback in URL hash
+    const hash = window.location.hash;
+    const isRecoveryMode = hash && hash.includes('type=recovery');
+    if (isRecoveryMode) {
+      setView('resetPassword');
+      // Clean the hash from URL without reload after a short delay so Supabase client captures it
+      setTimeout(() => {
+        window.history.replaceState(null, '', window.location.pathname);
+      }, 2500);
+    }
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      console.log("Auth event:", event);
+      
+      const isRecovery = window.location.hash.includes('type=recovery') || 
+                         window.location.href.includes('type=recovery') ||
+                         event === 'PASSWORD_RECOVERY';
+
+      if (session?.user) {
+        if (isRecovery) {
+          setView('resetPassword');
+          return;
+        }
+        if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+          // Escape the callstack using setTimeout to prevent internal SDK auth deadlocks
+          setTimeout(async () => {
+            await handleSignInSession(session.user);
+          }, 0);
+        }
+      } else {
+        if (event === 'SIGNED_OUT') {
+          setCurrentUser(null);
+          setView('login');
+        }
+      }
+    });
+
+    return () => {
+      subscription?.unsubscribe();
+    };
   }, []);
 
   const loadSupabaseData = async () => {
     try {
+      if (currentUser?.isDemo) {
+        setJobsState(MOCK_JOBS);
+        setCandidates(INITIAL_CANDIDATES);
+        setInterviews(INITIAL_INTERVIEWS);
+        return;
+      }
+      const isRealUser = currentUser && currentUser.email !== 'sarah.j@devmail.com' && currentUser.email !== 'recruiter@vividai.com';
+
       // 1. Fetch Jobs from Supabase
       const { data: dbJobs, error: jobsError } = await supabase.from('jobs').select('*');
       if (jobsError) console.error("Error loading jobs:", jobsError);
@@ -285,56 +473,78 @@ export default function App() {
         }));
         setJobsState(uiJobs);
       } else {
-        // Seed default jobs if empty
-        const { error: seedError } = await supabase.from('jobs').insert(
-          MOCK_JOBS.map(j => ({
-            id: j.id,
-            title: j.title,
-            company: j.company,
-            logo: j.logo,
-            location: j.location,
-            salary: j.salary,
-            type: j.type,
-            skills: j.skills,
-            description: j.description
-          }))
-        );
-        if (!seedError) setJobsState(MOCK_JOBS);
+        if (isRealUser && currentUser?.role === 'recruiter') {
+          // Real recruiter starts fresh with no jobs posted yet
+          setJobsState([]);
+        } else {
+          // Seed default jobs if empty for demo or real candidates so the directory is populated
+          const { error: seedError } = await supabase.from('jobs').insert(
+            MOCK_JOBS.map(j => ({
+              id: j.id,
+              title: j.title,
+              company: j.company,
+              logo: j.logo,
+              location: j.location,
+              salary: j.salary,
+              type: j.type,
+              skills: j.skills,
+              description: j.description
+            }))
+          );
+          if (!seedError) {
+            setJobsState(MOCK_JOBS);
+          } else {
+            console.error("Seeding jobs failed, falling back to local MOCK_JOBS:", seedError);
+            setJobsState(MOCK_JOBS);
+          }
+        }
       }
 
       // 2. Fetch Candidates and Applications
+      const { data: dbUsers, error: usersError } = await supabase.from('users').select('*');
       const { data: dbProfiles, error: profilesError } = await supabase.from('candidate_profiles').select('*');
       const { data: dbApps, error: appsError } = await supabase.from('applications').select('*');
       
+      if (usersError) console.error("Error loading users:", usersError);
       if (profilesError) console.error("Error loading profiles:", profilesError);
       if (appsError) console.error("Error loading applications:", appsError);
 
-      if (dbProfiles && dbProfiles.length > 0) {
-        const mappedCandidates = dbProfiles.map(profile => {
-          const profileApps = dbApps ? dbApps.filter(a => a.candidate_id === profile.id) : [];
+      if (dbUsers && dbUsers.length > 0) {
+        const candidateUsers = dbUsers.filter(u => u.role === 'candidate');
+        const mappedCandidates = candidateUsers.map(user => {
+          const profile = dbProfiles ? dbProfiles.find(p => p.user_id === user.id) : null;
+          const profileApps = dbApps ? dbApps.filter(a => a.candidate_id === user.id) : [];
           return {
-            id: profile.id,
-            name: profile.name || '',
-            title: profile.title || '',
-            location: profile.location || '',
-            email: profile.email || '',
-            avatar: profile.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=120&h=120',
-            skills: profile.skills || [],
-            bio: profile.bio || '',
-            kycStatus: profile.kyc_status || 'Pending',
-            pdfResumeName: profile.pdf_resume_name || '',
-            pdfResumeUrl: profile.pdf_resume_url || '',
-            videoResumeUrl: profile.video_resume_url || '',
-            videoDuration: profile.video_duration || '0:00',
+            id: user.id,
+            name: user.name || '',
+            email: user.email || '',
+            title: profile?.title || 'Software Engineer Portfolio',
+            location: profile?.location || 'Remote',
+            avatar: profile?.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=120&h=120',
+            skills: profile?.skills || ['React', 'JavaScript', 'HTML5', 'CSS3'],
+            bio: profile?.bio || 'Welcome to your portfolio! Update your details, skills, and record a video resume to stand out.',
+            kycStatus: profile?.kyc_status || 'Pending',
+            pdfResumeName: profile?.pdf_resume_name || '',
+            pdfResumeUrl: profile?.pdf_url || profile?.pdf_resume_url || '',
+            videoResumeUrl: profile?.video_url || profile?.video_resume_url || '',
+            videoDuration: profile?.video_duration || '0:00',
             appliedJobs: profileApps.map(a => a.job_id),
-            status: profileApps.length > 0 ? profileApps[0].status : (profile.status || 'Screened'),
-            aiMatchScore: profileApps.length > 0 ? profileApps[0].ai_match_score : (profile.ai_match_score || 60),
+            status: profileApps.length > 0 ? profileApps[0].status : (profile?.status || 'Screened'),
+            aiMatchScore: profileApps.length > 0 ? profileApps[0].ai_match_score : (profile?.ai_match_score || 60),
             chatHistory: profileApps.length > 0 ? (profileApps[0].chat_history || []) : [],
-            experience: profile.experience || '',
-            education: profile.education || ''
+            experience: profile?.experience || '',
+            education: profile?.education || '',
+            videoLanguage: profile?.video_language || 'English'
           };
         });
-        setCandidates(mappedCandidates);
+
+        if (mappedCandidates.length > 0) {
+          setCandidates(mappedCandidates);
+        } else {
+          setCandidates(isRealUser ? [] : INITIAL_CANDIDATES);
+        }
+      } else {
+        setCandidates(isRealUser ? [] : INITIAL_CANDIDATES);
       }
 
       // 3. Fetch Interviews
@@ -352,6 +562,8 @@ export default function App() {
           status: i.status || 'Confirmed'
         }));
         setInterviews(uiInterviews);
+      } else {
+        setInterviews(isRealUser ? [] : INITIAL_INTERVIEWS);
       }
 
     } catch (err) {
@@ -394,7 +606,7 @@ export default function App() {
 
     if (supabase) {
       try {
-        await supabase.from('candidate_profiles').update({ status: newStatus }).eq('id', candidateId);
+        await supabase.from('candidate_profiles').update({ status: newStatus }).eq('user_id', candidateId);
         await supabase.from('applications').update({ status: newStatus }).eq('candidate_id', candidateId);
       } catch (err) {
         console.error("Failed to sync candidate status to Supabase:", err);
@@ -464,21 +676,38 @@ export default function App() {
 
     if (supabase) {
       try {
+        if (updatedProfile.name !== undefined) {
+          await supabase.from('users').update({ name: updatedProfile.name }).eq('id', candidateId);
+        }
+
         const dbFields = {};
-        if (updatedProfile.name !== undefined) dbFields.name = updatedProfile.name;
         if (updatedProfile.title !== undefined) dbFields.title = updatedProfile.title;
         if (updatedProfile.location !== undefined) dbFields.location = updatedProfile.location;
         if (updatedProfile.bio !== undefined) dbFields.bio = updatedProfile.bio;
         if (updatedProfile.skills !== undefined) dbFields.skills = updatedProfile.skills;
         if (updatedProfile.kycStatus !== undefined) dbFields.kyc_status = updatedProfile.kycStatus;
         if (updatedProfile.pdfResumeName !== undefined) dbFields.pdf_resume_name = updatedProfile.pdfResumeName;
-        if (updatedProfile.pdfResumeUrl !== undefined) dbFields.pdf_resume_url = updatedProfile.pdfResumeUrl;
-        if (updatedProfile.videoResumeUrl !== undefined) dbFields.video_resume_url = updatedProfile.videoResumeUrl;
+        
+        if (updatedProfile.pdfResumeUrl !== undefined) {
+          dbFields.pdf_url = updatedProfile.pdfResumeUrl;
+          dbFields.pdf_resume_url = updatedProfile.pdfResumeUrl;
+        }
+        if (updatedProfile.videoResumeUrl !== undefined) {
+          dbFields.video_url = updatedProfile.videoResumeUrl;
+          dbFields.video_resume_url = updatedProfile.videoResumeUrl;
+        }
+        
         if (updatedProfile.videoDuration !== undefined) dbFields.video_duration = updatedProfile.videoDuration;
         if (updatedProfile.experience !== undefined) dbFields.experience = updatedProfile.experience;
         if (updatedProfile.education !== undefined) dbFields.education = updatedProfile.education;
+        if (updatedProfile.videoLanguage !== undefined) dbFields.video_language = updatedProfile.videoLanguage;
 
-        await supabase.from('candidate_profiles').update(dbFields).eq('id', candidateId);
+        if (Object.keys(dbFields).length > 0) {
+          await supabase.from('candidate_profiles').upsert({
+            user_id: candidateId,
+            ...dbFields
+          });
+        }
       } catch (err) {
         console.error("Failed to update candidate profile in Supabase:", err);
       }
@@ -716,132 +945,142 @@ Please write a highly professional, polite, and encouraging recruiter response. 
     }
   };
 
-  const activeCandidate = candidates.find(c => c.id === currentCandidateId) || candidates[0];
+  const handleLogout = async () => {
+    // Immediately clear view so the dashboard unmounts at once
+    setCurrentUser(null);
+    setView('login');
+    localStorage.removeItem('hirevid_currentUser');
+    localStorage.removeItem('hirevid_view');   // ← was persisting 'recruiter', causing re-redirect on refresh
+    window.scrollTo({ top: 0, behavior: 'instant' });
+    try {
+      if (supabase) {
+        await supabase.auth.signOut();
+      }
+    } catch (err) {
+      console.error("Supabase signOut error:", err);
+    }
+  };
+
+  const activeCandidate = candidates.find(c => c.id === currentCandidateId) || (() => {
+    const isRealUser = currentUser && currentUser.email !== 'sarah.j@devmail.com' && currentUser.email !== 'recruiter@vividai.com';
+    if (isRealUser && currentUser.role === 'candidate') {
+      return {
+        id: currentCandidateId,
+        name: currentUser.name || 'New Candidate',
+        email: currentUser.email || '',
+        title: 'Software Engineer Portfolio',
+        location: 'Remote',
+        avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=120&h=120',
+        skills: ['React', 'JavaScript', 'HTML5', 'CSS3'],
+        bio: 'Welcome to your portfolio! Update your details, skills, and record a video resume to stand out.',
+        kycStatus: 'Pending',
+        pdfResumeName: '',
+        videoResumeUrl: '',
+        videoDuration: '0:00',
+        appliedJobs: [],
+        status: 'Screened',
+        aiMatchScore: 60,
+        chatHistory: [],
+        experience: '',
+        education: ''
+      };
+    }
+    return candidates[0] || INITIAL_CANDIDATES[0];
+  })();
 
   return (
     <div className="min-h-screen flex flex-col bg-[#050816] text-[#F1F5F9] font-sans antialiased scroll-smooth">
-      {/* SECTION 1 - NAVBAR (sticky top / always visible) */}
-      <header className="fixed top-0 left-0 right-0 z-[1000] bg-[#050816]/97 backdrop-blur-[12px] border-b border-white/[0.07] py-4 px-6 md:px-8 flex justify-between items-center shadow-lg transition-all duration-200">
-        <div className="flex items-center gap-3 cursor-pointer" onClick={() => setView('landing')}>
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-purple-600 to-blue-500 flex items-center justify-center shadow-md shadow-purple-500/20">
-            <Video className="w-6 h-6 text-white" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold tracking-tight text-[#F1F5F9] font-syne">
-              HireVid AI
-            </h1>
-            <span className="text-[9px] uppercase tracking-widest text-[#475569] font-semibold block leading-none mt-0.5">
-              VIDEO-FIRST HIRING PLATFORM
-            </span>
-          </div>
-        </div>
-
-        {/* Middle Navigation (hidden on mobile, visible on desktop) */}
-        {['landing', 'login', 'signup'].includes(view) && (
-          <nav className="hidden lg:flex items-center gap-6 text-[13px] font-bold text-[#94A3B8] font-sans">
-            <button 
-              onClick={() => handleNavClick('how-it-works')}
-              className="hover:text-white transition-all duration-200 hover:scale-105 active:scale-95 transform"
-            >
-              How It Works
-            </button>
-            <button 
-              onClick={() => handleNavClick('features')}
-              className="hover:text-white transition-all duration-200 hover:scale-105 active:scale-95 transform"
-            >
-              Features
-            </button>
-            <button 
-              onClick={() => handleNavClick('testimonials')}
-              className="hover:text-white transition-all duration-200 hover:scale-105 active:scale-95 transform"
-            >
-              Testimonials
-            </button>
-            <button 
-              onClick={() => handleNavClick('for-candidates')}
-              className="hover:text-white transition-all duration-200 hover:scale-105 active:scale-95 transform"
-            >
-              For Candidates
-            </button>
-            <button 
-              onClick={() => handleNavClick('for-recruiters')}
-              className="hover:text-white transition-all duration-200 hover:scale-105 active:scale-95 transform"
-            >
-              For Recruiters
-            </button>
-          </nav>
-        )}
-
-        {/* Logged-in user info — role is LOCKED to their account, no switching */}
-        {currentUser ? (
-          <div className="flex items-center gap-3">
-            {/* User pill: avatar initial + name + role badge */}
-            <div className="flex items-center gap-2.5 bg-[#0B1020] border border-white/10 rounded-full px-3 py-1.5 shadow-inner">
-              {/* Avatar initial circle */}
-              <div className="w-6 h-6 rounded-full bg-gradient-to-tr from-purple-600 to-blue-500 flex items-center justify-center shrink-0">
-                <span className="text-[10px] font-black text-white uppercase">
-                  {currentUser.name ? currentUser.name[0] : '?'}
-                </span>
-              </div>
-              {/* Name */}
-              <span className="text-xs font-semibold text-slate-200 hidden sm:inline max-w-[100px] truncate">
-                {currentUser.name}
-              </span>
-              {/* Role badge — locked, not clickable */}
-              <span className={`text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full shrink-0 ${
-                currentUser.role === 'recruiter'
-                  ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
-                  : 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
-              }`}>
-                {currentUser.role === 'recruiter' ? '🏢 Recruiter' : '👤 Candidate'}
+      {/* SECTION 1 - NAVBAR (sticky top / visible only when logged out) */}
+      {!['candidate', 'recruiter'].includes(view) && (
+        <header className="fixed top-0 left-0 right-0 z-[1000] bg-[#050816]/97 backdrop-blur-[12px] border-b border-white/[0.07] py-4 px-6 md:px-8 flex justify-between items-center shadow-lg transition-all duration-200">
+          <div className="flex items-center gap-3 cursor-pointer" onClick={() => setView('landing')}>
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-purple-600 to-blue-500 flex items-center justify-center shadow-md shadow-purple-500/20">
+              <Video className="w-6 h-6 text-white" />
+            </div>
+            <div>
+              <h1 className="text-xl font-bold tracking-tight text-[#F1F5F9] font-syne">
+                HireVid AI
+              </h1>
+              <span className="text-[9px] uppercase tracking-widest text-[#475569] font-semibold block leading-none mt-0.5">
+                VIDEO-FIRST HIRING PLATFORM
               </span>
             </div>
-
-            {/* Logout button */}
-            <button
-              onClick={() => {
-                setCurrentUser(null);
-                localStorage.removeItem('hirevid_currentUser');
-                localStorage.setItem('hirevid_view', 'login');
-                window.scrollTo({ top: 0, behavior: 'instant' });
-                setView('login');
-              }}
-              className="p-2 rounded-lg bg-white/5 border border-white/10 text-slate-300 hover:text-white hover:bg-red-500/10 hover:border-red-500/30 transition-all"
-              title="Log Out"
-            >
-              <LogOut className="w-4 h-4" />
-            </button>
           </div>
-        ) : (
-          /* Login/Signup Nav indicators if logged out */
-          <div className="flex items-center gap-3">
-            <button 
-              onClick={() => {
-                setAuthFormRole('candidate');
-                setView('login');
-              }}
-              className="text-xs font-bold text-[#94A3B8] hover:text-white transition-all px-3.5 py-2 bg-transparent rounded-lg hover:scale-95 active:scale-90 duration-200"
-            >
-              Log In
-            </button>
-            <button 
-              onClick={() => {
-                setAuthFormRole('candidate');
-                setView('signup');
-              }}
-              className="px-5 py-2 bg-gradient-to-r from-purple-600 to-blue-500 text-white font-bold rounded-xl text-xs uppercase tracking-wider hover:opacity-90 hover:scale-[1.02] transform active:scale-95 transition-all duration-200 shadow-md shadow-purple-500/10"
-            >
-              Sign Up
-            </button>
-          </div>
-        )}
-      </header>
 
-      {/* Main Body Layout with fixed header offset */}
-      <main className="flex-1 flex flex-col pt-[72px]">
+          {/* Middle Navigation (hidden on mobile, visible on desktop) */}
+          {['landing', 'login', 'signup'].includes(view) && (
+            <nav className="hidden lg:flex items-center gap-6 text-[13px] font-bold text-[#94A3B8] font-sans">
+              <button 
+                onClick={() => handleNavClick('how-it-works')}
+                className="hover:text-white transition-all duration-200 hover:scale-105 active:scale-95 transform"
+              >
+                How It Works
+              </button>
+              <button 
+                onClick={() => handleNavClick('features')}
+                className="hover:text-white transition-all duration-200 hover:scale-105 active:scale-95 transform"
+              >
+                Features
+              </button>
+              <button 
+                onClick={() => handleNavClick('testimonials')}
+                className="hover:text-white transition-all duration-200 hover:scale-105 active:scale-95 transform"
+              >
+                Testimonials
+              </button>
+              <button 
+                onClick={() => handleNavClick('for-candidates')}
+                className="hover:text-white transition-all duration-200 hover:scale-105 active:scale-95 transform"
+              >
+                For Candidates
+              </button>
+              <button 
+                onClick={() => handleNavClick('for-recruiters')}
+                className="hover:text-white transition-all duration-200 hover:scale-105 active:scale-95 transform"
+              >
+                For Recruiters
+              </button>
+            </nav>
+          )}
+
+          {/* Logged-in user info — removed and kept on the left sidebar instead! */}
+          {currentUser ? null : (
+            /* Login/Signup Nav indicators if logged out */
+            <div className="flex items-center gap-3">
+              <button 
+                onClick={() => setShowDemoModal(true)}
+                className="px-4 py-2 bg-purple-600/10 border border-purple-500/30 text-purple-300 font-bold rounded-xl text-xs uppercase tracking-wider hover:bg-purple-600/20 hover:scale-[1.02] active:scale-95 transition-all duration-200 shadow-md shadow-purple-500/5 cursor-pointer"
+              >
+                Try Demo &rarr;
+              </button>
+              <button 
+                onClick={() => {
+                  setAuthFormRole('candidate');
+                  setView('login');
+                }}
+                className="text-xs font-bold text-[#94A3B8] hover:text-white transition-all px-3.5 py-2 bg-transparent rounded-lg hover:scale-95 active:scale-90 duration-200"
+              >
+                Log In
+              </button>
+              <button 
+                onClick={() => {
+                  setAuthFormRole('candidate');
+                  setView('signup');
+                }}
+                className="px-5 py-2 bg-gradient-to-r from-purple-600 to-blue-500 text-white font-bold rounded-xl text-xs uppercase tracking-wider hover:opacity-90 hover:scale-[1.02] transform active:scale-95 transition-all duration-200 shadow-md shadow-purple-500/10"
+              >
+                Sign Up
+              </button>
+            </div>
+          )}
+        </header>
+      )}
+
+      {/* Main Body Layout with dynamic header padding offset */}
+      <main className={`flex-1 flex flex-col ${['candidate', 'recruiter'].includes(view) ? 'pt-0' : 'pt-[72px]'}`}>
         
         {/* Render split screen Auth System if active */}
-        {(view === 'login' || view === 'signup') && (
+        {(view === 'login' || view === 'signup' || view === 'resetPassword') && (
           <AuthScreen 
             view={view}
             setView={setView}
@@ -885,16 +1124,22 @@ Please write a highly professional, polite, and encouraging recruiter response. 
                     setAuthFormRole('candidate');
                     setView('signup');
                   }}
-                  className="px-7 py-3.5 bg-gradient-to-r from-purple-600 to-blue-500 text-[#050816] font-bold rounded-[10px] text-[14px] uppercase tracking-wider hover:opacity-90 hover:-translate-y-[1px] shadow-lg shadow-purple-500/10 active:scale-95 transition-all duration-200"
+                  className="px-7 py-3.5 bg-gradient-to-r from-purple-600 to-blue-500 text-[#050816] font-bold rounded-[10px] text-[14px] uppercase tracking-wider hover:opacity-90 hover:-translate-y-[1px] shadow-lg shadow-purple-500/10 active:scale-95 transition-all duration-200 cursor-pointer"
                 >
                   Record Your Resume →
+                </button>
+                <button 
+                  onClick={() => setShowDemoModal(true)}
+                  className="px-7 py-3.5 bg-purple-600/10 border border-purple-500/30 text-purple-300 font-bold rounded-[10px] text-[14px] uppercase tracking-wider hover:bg-purple-600/20 hover:-translate-y-[1px] active:scale-95 transition-all duration-200 cursor-pointer shadow-md shadow-purple-500/5"
+                >
+                  Try Demo &rarr;
                 </button>
                 <button 
                   onClick={() => {
                     setAuthFormRole('recruiter');
                     setView('signup');
                   }}
-                  className="px-7 py-3.5 bg-transparent border border-white/20 hover:border-white text-white font-bold rounded-[10px] text-[14px] uppercase tracking-wider hover:bg-white/5 hover:-translate-y-[1px] active:scale-95 transition-all duration-200"
+                  className="px-7 py-3.5 bg-transparent border border-white/20 hover:border-white text-white font-bold rounded-[10px] text-[14px] uppercase tracking-wider hover:bg-white/5 hover:-translate-y-[1px] active:scale-95 transition-all duration-200 cursor-pointer"
                 >
                   Post a Job
                 </button>
@@ -1293,9 +1538,7 @@ Please write a highly professional, polite, and encouraging recruiter response. 
                 </div>
 
               </div>
-
-              {/* Bottom bar */}
-              <div className="w-full max-w-5xl mx-auto border-t border-white/[0.07] mt-8 pt-5 text-center text-[12px] text-[#475569] font-sans font-medium">
+                      <div className="w-full max-w-5xl mx-auto border-t border-white/[0.07] mt-8 pt-5 text-center text-[12px] text-[#475569] font-sans font-medium">
                 <span>© 2026 HireVid AI. All rights reserved.</span>
               </div>
             </footer>
@@ -1305,33 +1548,170 @@ Please write a highly professional, polite, and encouraging recruiter response. 
 
         {/* Dashboards - Candidate view */}
         {view === 'candidate' && (
-          <CandidateWorkspace 
-            activeTab={candidateActiveTab}
-            setActiveTab={setCandidateActiveTab}
-            activeCandidate={activeCandidate}
-            jobs={jobs}
-            onUpdateProfile={(updated) => handleUpdateCandidateProfile(currentCandidateId, updated)}
-            onApplyJob={(jobId) => handleApplyJob(currentCandidateId, jobId)}
-            onSendChatMessage={handleSendChatMessage}
-            interviews={interviews}
-            onScheduleInterview={handleScheduleInterview}
-          />
+          <ErrorBoundary>
+            <CandidateWorkspace 
+              activeTab={candidateActiveTab}
+              setActiveTab={setCandidateActiveTab}
+              activeCandidate={activeCandidate}
+              jobs={jobs}
+              onUpdateProfile={(updated) => handleUpdateCandidateProfile(currentCandidateId, updated)}
+              onApplyJob={(jobId) => handleApplyJob(currentCandidateId, jobId)}
+              onAddJobs={(newJobs) => setJobsState(prev => [...newJobs, ...prev])}
+              onSendChatMessage={handleSendChatMessage}
+              interviews={interviews}
+              onScheduleInterview={handleScheduleInterview}
+              onLogout={handleLogout}
+            />
+          </ErrorBoundary>
         )}
 
         {/* Dashboards - Recruiter view */}
         {view === 'recruiter' && (
-          <RecruiterWorkspace 
-            activeTab={recruiterActiveTab}
-            setActiveTab={setRecruiterActiveTab}
-            currentUser={currentUser}
-            candidates={candidates}
-            jobs={jobs}
-            interviews={interviews}
-            onUpdateCandidateStatus={updateCandidateStatus}
-            onScheduleInterview={handleScheduleInterview}
-            onSendChatMessage={handleSendChatMessage}
-          />
+          <ErrorBoundary>
+            <RecruiterWorkspace 
+              activeTab={recruiterActiveTab}
+              setActiveTab={setRecruiterActiveTab}
+              currentUser={currentUser}
+              candidates={candidates}
+              jobs={jobs}
+              interviews={interviews}
+              onUpdateCandidateStatus={updateCandidateStatus}
+              onScheduleInterview={handleScheduleInterview}
+              onSendChatMessage={handleSendChatMessage}
+              onLogout={handleLogout}
+            />
+          </ErrorBoundary>
         )}
+
+        {showDemoModal && (
+          <div className="fixed inset-0 z-[100000] flex items-center justify-center bg-black/90 backdrop-blur-md p-4 animate-fade-in">
+            <div className="glass-card max-w-2xl w-full rounded-2xl border border-purple-500/30 p-8 shadow-2xl relative overflow-hidden">
+              
+              {/* Background glow */}
+              <div className="absolute top-0 left-1/2 -translate-x-1/2 w-80 h-40 bg-purple-600/10 rounded-full blur-3xl pointer-events-none" />
+              
+              <button 
+                onClick={() => setShowDemoModal(false)}
+                className="absolute top-4 right-4 text-slate-400 hover:text-white transition-colors cursor-pointer z-10"
+              >
+                <X className="w-5 h-5" />
+              </button>
+
+              <div className="text-center mb-6 relative z-10">
+                <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-purple-600 to-blue-500 flex items-center justify-center mx-auto mb-3 shadow-lg shadow-purple-500/20">
+                  <Sparkles className="w-7 h-7 text-white animate-pulse" />
+                </div>
+                <h3 className="text-2xl font-bold text-white font-jakarta">Explore Live Demo Workspaces</h3>
+                <p className="text-slate-400 text-xs mt-1.5 max-w-md mx-auto">Both dashboards are fully pre-built with real candidates, jobs, chat history, and AI scores. No signup needed.</p>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 relative z-10">
+                
+                {/* Candidate Demo Card */}
+                <button
+                  onClick={() => handleDemoModeLogin('candidate')}
+                  className="flex flex-col gap-3 p-5 rounded-xl border border-purple-500/20 bg-[#050816] hover:bg-[#0B1020] hover:border-purple-500/50 text-left transition-all duration-300 group hover:scale-[1.02] cursor-pointer"
+                >
+                  <div className="flex items-center gap-3">
+                    <img 
+                      src="https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&q=80&w=48&h=48"
+                      alt="Sarah Jenkins"
+                      className="w-12 h-12 rounded-xl object-cover border border-purple-500/30"
+                    />
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-white text-sm group-hover:text-purple-400 transition-colors">Sarah Jenkins</span>
+                        <span className="text-[9px] uppercase tracking-wider px-2 py-0.5 bg-purple-500/15 border border-purple-500/20 text-purple-300 font-bold rounded-full">Candidate</span>
+                      </div>
+                      <p className="text-slate-500 text-[10px] mt-0.5">Full Stack Engineer · New York, NY</p>
+                    </div>
+                  </div>
+
+                  {/* Pre-built feature previews */}
+                  <div className="flex flex-wrap gap-1.5 mt-1">
+                    {[
+                      { icon: '🎥', label: 'Video Resume' },
+                      { icon: '✅', label: 'KYC Verified' },
+                      { icon: '📄', label: '3 Applications' },
+                      { icon: '🤖', label: 'AI Career Path' },
+                      { icon: '📊', label: 'Skill Assessments' },
+                      { icon: '🌐', label: 'Multilingual' },
+                    ].map(f => (
+                      <span key={f.label} className="text-[9px] px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-slate-300 font-semibold flex items-center gap-1">
+                        {f.icon} {f.label}
+                      </span>
+                    ))}
+                  </div>
+
+                  <div className="flex items-center justify-between mt-1 pt-2 border-t border-white/5">
+                    <span className="text-[10px] text-slate-500">94% AI Match Score</span>
+                    <span className="text-[10px] font-bold text-purple-400 group-hover:translate-x-0.5 transition-transform">Enter Dashboard →</span>
+                  </div>
+                </button>
+
+                {/* Recruiter Demo Card */}
+                <button
+                  onClick={() => handleDemoModeLogin('recruiter')}
+                  className="flex flex-col gap-3 p-5 rounded-xl border border-blue-500/20 bg-[#050816] hover:bg-[#0B1020] hover:border-blue-500/50 text-left transition-all duration-300 group hover:scale-[1.02] cursor-pointer"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-12 h-12 rounded-xl bg-gradient-to-tr from-blue-600 to-purple-500 flex items-center justify-center text-2xl border border-blue-500/30 shrink-0">
+                      🏢
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-white text-sm group-hover:text-blue-400 transition-colors">LTI Mindtree</span>
+                        <span className="text-[9px] uppercase tracking-wider px-2 py-0.5 bg-blue-500/15 border border-blue-500/20 text-blue-300 font-bold rounded-full">Recruiter</span>
+                      </div>
+                      <p className="text-slate-500 text-[10px] mt-0.5">HR Lead: Priya Mehta · 3 Active Jobs</p>
+                    </div>
+                  </div>
+
+                  {/* Kanban column previews */}
+                  <div className="grid grid-cols-4 gap-1 mt-1">
+                    {[
+                      { label: 'Screened', count: 1, color: 'bg-slate-500' },
+                      { label: 'Shortlisted', count: 1, color: 'bg-amber-500' },
+                      { label: 'Interview', count: 1, color: 'bg-blue-500' },
+                      { label: 'Offered', count: 1, color: 'bg-emerald-500' },
+                    ].map(col => (
+                      <div key={col.label} className="flex flex-col items-center gap-0.5">
+                        <div className={`w-full h-1.5 rounded-full ${col.color} opacity-70`} />
+                        <span className="text-[8px] text-slate-500 font-bold">{col.label}</span>
+                        <span className="text-[8px] font-black text-white">{col.count}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="flex flex-wrap gap-1.5">
+                    {[
+                      { icon: '📋', label: 'Kanban Pipeline' },
+                      { icon: '🤖', label: 'AI Match Center' },
+                      { icon: '🎥', label: 'Video Reviews' },
+                      { icon: '📅', label: 'Interview Scheduler' },
+                      { icon: '💬', label: 'Candidate Chat' },
+                      { icon: '🏆', label: 'Rankings Board' },
+                    ].map(f => (
+                      <span key={f.label} className="text-[9px] px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-slate-300 font-semibold flex items-center gap-1">
+                        {f.icon} {f.label}
+                      </span>
+                    ))}
+                  </div>
+
+                  <div className="flex items-center justify-between mt-1 pt-2 border-t border-white/5">
+                    <span className="text-[10px] text-slate-500">4 Candidates Pre-loaded</span>
+                    <span className="text-[10px] font-bold text-blue-400 group-hover:translate-x-0.5 transition-transform">Enter Dashboard →</span>
+                  </div>
+                </button>
+              </div>
+
+              <p className="text-center text-[10px] text-slate-600 mt-4 relative z-10">
+                ✦ All data is pre-populated locally · No database calls · Instant access
+              </p>
+            </div>
+          </div>
+        )}
+
       </main>
     </div>
   );
